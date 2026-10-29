@@ -4,7 +4,8 @@ run it in the Run view."""
 
 from __future__ import annotations
 
-from tkinter import messagebox, simpledialog
+import json
+from tkinter import filedialog, messagebox, simpledialog
 
 import customtkinter as ctk
 
@@ -36,6 +37,10 @@ class ProjectsView(View):
         ctk.CTkButton(bar, text="Delete", width=70, fg_color="#a33",
                       hover_color="#c44", command=self._delete).pack(
             side="left", padx=6)
+        ctk.CTkButton(bar, text="Import…", width=80, fg_color="gray40",
+                      command=self._import).pack(side="right")
+        ctk.CTkButton(bar, text="Export…", width=80, fg_color="gray40",
+                      command=self._export).pack(side="right", padx=6)
 
         self.listframe = ctk.CTkScrollableFrame(self.body,
                                                 label_text="Projects")
@@ -144,6 +149,43 @@ class ProjectsView(View):
         self.app.projects.save(cur)
         self.app.projects.delete(old)
         self.app.set_active_project(new)
+
+    def _export(self) -> None:
+        cur = self.app.active_project
+        path = filedialog.asksaveasfilename(
+            title="Export project", defaultextension=".json",
+            filetypes=[("De-ID project", "*.json")],
+            initialfile=f"{cur.name}.json")
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(cur.to_dict(), fh, indent=2)
+        except OSError as exc:
+            messagebox.showerror("Export", f"Could not write: {exc}",
+                                 parent=self)
+            return
+        messagebox.showinfo("Export", f"Exported '{cur.name}' to:\n{path}",
+                            parent=self)
+
+    def _import(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Import project",
+            filetypes=[("De-ID project", "*.json"), ("All files", "*.*")])
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8") as fh:
+                proj = Project.from_dict(json.load(fh))
+        except (OSError, ValueError, TypeError) as exc:
+            messagebox.showerror("Import", f"Not a valid project file: {exc}",
+                                 parent=self)
+            return
+        proj.name = self._unique_name(proj.name or "Imported project")
+        self.app.projects.save(proj)
+        self.app.set_active_project(proj.name)
+        messagebox.showinfo("Import", f"Imported as '{proj.name}'.",
+                            parent=self)
 
     def _delete(self) -> None:
         cur = self.app.active_project

@@ -60,6 +60,20 @@ def test_to_receiver_config_drives_engine():
     assert str(out.StudyDescription) == "ANON STUDY"
 
 
+def test_to_dict_from_dict_preserves_new_fields():
+    # Backs the Projects view's export/import (JSON round-trip).
+    p = Project(name="P", date_mode="jitter", date_jitter_days=7,
+                drop_rules=[{"tag": "Modality", "op": "equals", "value": "SC",
+                             "action": "drop", "scope": "instance"}],
+                ocr_enabled=True, pseudonymize=True,
+                pseudonym_tags=["PatientID"])
+    back = Project.from_dict(p.to_dict())
+    assert back.date_mode == "jitter" and back.date_jitter_days == 7
+    assert back.drop_rules and back.drop_rules[0]["value"] == "SC"
+    assert back.ocr_enabled is True
+    assert back.pseudonym_tags == ["PatientID"]
+
+
 def test_summary_mentions_actions():
     p = Project(name="x", basic_profile=True, calculated_dates=True,
                 remove_image_top=5)

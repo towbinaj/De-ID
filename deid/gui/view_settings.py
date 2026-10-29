@@ -129,6 +129,9 @@ class SettingsView(View):
                  pady=(12, 2))
         ctk.CTkLabel(hdr, text="Export destinations (PACS / VNA)",
                      font=ctk.CTkFont(size=15, weight="bold")).pack(side="left")
+        ctk.CTkButton(hdr, text="Import from DICOM Toolkit…", width=200,
+                      fg_color="gray40",
+                      command=self._import_toolkit).pack(side="left", padx=PAD)
         ctk.CTkButton(hdr, text="+ Add", width=70,
                       command=self._add_dest).pack(side="right")
         self.dest_list = ctk.CTkFrame(f, fg_color="transparent")
@@ -200,6 +203,51 @@ class SettingsView(View):
             return
         self.app.destinations = [n for n in self.app.destinations if n is not node]
         self._persist_dests()
+
+    def _import_toolkit(self) -> None:
+        from tkinter import filedialog
+        from .. import toolkit_import as ti
+        folder = ti.find_toolkit_data()
+        if folder is not None:
+            if not messagebox.askyesno(
+                    "Import from DICOM Toolkit",
+                    f"Found Toolkit data at:\n{folder}\n\nImport destinations, "
+                    "settings, and any profiles from here?", parent=self):
+                folder = None
+        if folder is None:
+            chosen = filedialog.askdirectory(
+                title="Select the DICOMToolkit-data folder")
+            if not chosen:
+                return
+            folder = chosen
+        try:
+            summary = ti.import_all(folder)
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Import", f"Import failed: {exc}", parent=self)
+            return
+        # Reload app state from disk and refresh the UI.
+        self.app.destinations = config.load_destinations()
+        self.app.settings = config.Settings.load()
+        self.app.broadcast_destinations_changed()
+        self.app.refresh_project_menu()
+        self._render_dests()
+        self._reload_prefs_widgets()
+        ctk.set_appearance_mode(self.app.settings.appearance)
+        apply_scale(self.app.settings.ui_scale)
+        messagebox.showinfo(
+            "Import complete",
+            f"Destinations added: {summary['destinations_added']} "
+            f"(skipped {summary['destinations_skipped']})\n"
+            f"Settings applied: {', '.join(summary['settings']) or 'none'}\n"
+            f"Projects added: {summary['projects_added']}", parent=self)
+
+    def _reload_prefs_widgets(self) -> None:
+        s = self.app.settings
+        self.appearance.set(s.appearance)
+        self.scale.set(scale_name(s.ui_scale))
+        self.bug_email.delete(0, "end")
+        if s.bug_report_email:
+            self.bug_email.insert(0, s.bug_report_email)
 
     def _test(self, node: Node) -> None:
         from ..net import scu
