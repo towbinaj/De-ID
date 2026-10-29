@@ -177,25 +177,31 @@ class RulesView(View):
             f, width=280, values=list(_DATE_LABELS),
             command=lambda _v: self._date_params_refresh())
         place(self.date_menu, "Dates")
-        # Per-mode parameter widgets, shown one at a time below the menu.
-        dp = ctk.CTkFrame(f, fg_color="transparent")
-        self._date_baseline_wrap = ctk.CTkFrame(dp, fg_color="transparent")
+        # Per-mode parameter widgets share one grid row and are grid_remove()d
+        # when inactive, so the row collapses (no dead space) for Remove/Keep.
+        self._date_param_row = r
+        self._date_baseline_wrap = ctk.CTkFrame(f, fg_color="transparent")
         ctk.CTkLabel(self._date_baseline_wrap,
                      text="Baseline date (YYYYMMDD)").pack(side="left", padx=(0, 6))
         self.date_baseline = ctk.CTkEntry(self._date_baseline_wrap, width=120)
         self.date_baseline.pack(side="left")
-        self._date_jitter_wrap = ctk.CTkFrame(dp, fg_color="transparent")
+        self._date_jitter_wrap = ctk.CTkFrame(f, fg_color="transparent")
         ctk.CTkLabel(self._date_jitter_wrap,
                      text="Shift within ± days").pack(side="left", padx=(0, 6))
         self.date_jitter = ctk.CTkEntry(self._date_jitter_wrap, width=80)
         self.date_jitter.pack(side="left")
-        self._date_round_wrap = ctk.CTkFrame(dp, fg_color="transparent")
+        self._date_round_wrap = ctk.CTkFrame(f, fg_color="transparent")
         ctk.CTkLabel(self._date_round_wrap, text="Round to").pack(side="left",
                                                                  padx=(0, 6))
         self.date_round = ctk.CTkOptionMenu(self._date_round_wrap, width=100,
                                             values=["year", "month"])
         self.date_round.pack(side="left")
-        place(dp, "")
+        for _w in (self._date_baseline_wrap, self._date_jitter_wrap,
+                   self._date_round_wrap):
+            _w.grid(row=self._date_param_row, column=1, sticky="w", padx=PAD,
+                    pady=3)
+            _w.grid_remove()
+        r += 1
         ctk.CTkLabel(
             f, text="Baseline keeps age (DOB→anchor). Jitter shifts all of a "
             "patient's dates by the same random ±days (intervals + age kept, "
@@ -298,7 +304,7 @@ class RulesView(View):
             row=r, column=0, columnspan=2, sticky="w", padx=PAD, pady=(2, 4))
         r += 1
 
-        self.rows_frame = ctk.CTkFrame(f, fg_color="transparent")
+        self.rows_frame = ctk.CTkFrame(f, fg_color="transparent", height=0)
         self.rows_frame.grid(row=r, column=0, columnspan=2, sticky="ew",
                              padx=PAD)
         self.rows_frame.grid_columnconfigure(0, weight=1)
@@ -326,7 +332,7 @@ class RulesView(View):
             font=ctk.CTkFont(size=11)).grid(
             row=r, column=0, columnspan=2, sticky="w", padx=PAD, pady=(2, 4))
         r += 1
-        self.drop_rows_frame = ctk.CTkFrame(f, fg_color="transparent")
+        self.drop_rows_frame = ctk.CTkFrame(f, fg_color="transparent", height=0)
         self.drop_rows_frame.grid(row=r, column=0, columnspan=2, sticky="ew",
                                   padx=PAD)
         self.drop_rows_frame.grid_columnconfigure(0, weight=1)
@@ -428,15 +434,11 @@ class RulesView(View):
 
     def _date_params_refresh(self) -> None:
         mode = _DATE_LABELS.get(self.date_menu.get(), "remove")
-        for w in (self._date_baseline_wrap, self._date_jitter_wrap,
-                  self._date_round_wrap):
-            w.pack_forget()
-        if mode == "baseline":
-            self._date_baseline_wrap.pack(anchor="w")
-        elif mode == "jitter":
-            self._date_jitter_wrap.pack(anchor="w")
-        elif mode == "round":
-            self._date_round_wrap.pack(anchor="w")
+        mapping = {"baseline": self._date_baseline_wrap,
+                   "jitter": self._date_jitter_wrap,
+                   "round": self._date_round_wrap}
+        for m, w in mapping.items():
+            w.grid() if m == mode else w.grid_remove()
 
     def _collect_into(self, p) -> None:
         """Write every widget value into a project (no persistence)."""
