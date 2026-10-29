@@ -29,7 +29,10 @@ De-ID keeps the same engine and rebuilds the experience:
   de-identifies incoming studies against the active project and forwards them to a
   research PACS/VNA.
 - **Burned-in pixel text (OCR)** — detect and redact burned-in PHI, beyond fixed
-  top/left rectangle blanking (optional).
+  top/left rectangle blanking (optional; install `requirements-ocr.txt`). OCR is
+  available when running from source; it is **not** bundled into the packaged
+  `.exe` (onnxruntime's native libraries crash under PyInstaller), where OCR
+  rules are reported unavailable and skipped.
 - **CTP compatibility** — import/export RSNA/CTP anonymizer scripts.
 
 ## Privacy & security

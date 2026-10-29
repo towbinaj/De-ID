@@ -56,16 +56,12 @@ hiddenimports += ["openjpeg", "libjpeg"]
 hiddenimports += collect_submodules("pydicom.pixels")
 hiddenimports += collect_submodules("pydicom.pixel_data_handlers")
 
-# Optional OCR extra (rapidocr-onnxruntime): bundle it + its ONNX models only
-# when installed, so a build without the extra still works (OCR is skipped).
-for pkg in ("rapidocr_onnxruntime", "onnxruntime"):
-    try:
-        d, b, h = collect_all(pkg)
-        datas += d
-        binaries += b
-        hiddenimports += h
-    except Exception:
-        pass
+# NOTE: the optional OCR extra (rapidocr-onnxruntime) is deliberately NOT bundled
+# into the exe. onnxruntime's native libraries segfault (0xC0000005) when loaded
+# from a PyInstaller build, which would crash the app. OCR therefore runs only
+# when the app is launched from source with requirements-ocr.txt installed; in
+# the packaged exe `ocr.available()` reports it absent and OCR rules are skipped.
+# (Revisit if onnxruntime + PyInstaller packaging is made reliable.)
 
 a = Analysis(
     ["main.py"],
@@ -75,8 +71,13 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
+    # OCR deps are EXCLUDED: onnxruntime's native libs segfault under
+    # PyInstaller. They're imported only inside deid.engine.ocr (lazily), so
+    # PyInstaller would otherwise auto-bundle them; excluding keeps them out so
+    # ocr.available() reports OCR absent in the exe and nothing tries to load it.
     excludes=["pytest", "tkinter.test", "test",
-              "PIL._avif", "PIL.AvifImagePlugin"],
+              "PIL._avif", "PIL.AvifImagePlugin",
+              "rapidocr_onnxruntime", "onnxruntime", "cv2"],
     noarchive=False,
 )
 

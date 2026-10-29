@@ -28,10 +28,15 @@ _warned_missing = False
 
 
 def available() -> bool:
-    """True if the optional OCR dependency can be imported."""
+    """True if the optional OCR dependency is installed.
+
+    Checks for the module WITHOUT importing it - importing onnxruntime loads
+    native libraries (slow, and in a frozen build it can crash the process), so
+    the heavy import is deferred until OCR actually runs (see ``_get_engine``).
+    """
     try:
-        import rapidocr_onnxruntime  # noqa: F401
-        return True
+        import importlib.util
+        return importlib.util.find_spec("rapidocr_onnxruntime") is not None
     except Exception:  # noqa: BLE001
         return False
 
