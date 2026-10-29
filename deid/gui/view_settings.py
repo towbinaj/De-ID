@@ -6,6 +6,8 @@ titles / hosts and never belong in the repository.
 
 from __future__ import annotations
 
+import threading
+import time
 from tkinter import messagebox
 
 import customtkinter as ctk
@@ -83,6 +85,8 @@ class SettingsView(View):
         self.form = ctk.CTkScrollableFrame(self.body)
         self.form.grid(row=0, column=0, sticky="nsew", padx=PAD, pady=PAD)
         self.form.grid_columnconfigure(1, weight=1)
+        self._health: dict = {}          # key -> {"status","ms","ok"}
+        self._health_cells: dict = {}    # key -> (status_lbl, latency_lbl)
         self._build_prefs()
         self._build_receiver()
         self._build_destinations()
@@ -129,9 +133,12 @@ class SettingsView(View):
                  pady=(12, 2))
         ctk.CTkLabel(hdr, text="Export destinations (PACS / VNA)",
                      font=ctk.CTkFont(size=15, weight="bold")).pack(side="left")
+        self.check_btn = ctk.CTkButton(hdr, text="Check all", width=90,
+                                       command=self._check_all)
+        self.check_btn.pack(side="left", padx=PAD)
         ctk.CTkButton(hdr, text="Import from DICOM Toolkit…", width=200,
                       fg_color="gray40",
-                      command=self._import_toolkit).pack(side="left", padx=PAD)
+                      command=self._import_toolkit).pack(side="left")
         ctk.CTkButton(hdr, text="+ Add", width=70,
                       command=self._add_dest).pack(side="right")
         self.dest_list = ctk.CTkFrame(f, fg_color="transparent")
@@ -150,9 +157,22 @@ class SettingsView(View):
         widget.grid(row=r, column=1, sticky="w", padx=PAD, pady=6)
 
     # -- destinations CRUD ----------------------------------------------
+    @staticmethod
+    def _health_key(node) -> str:
+        return f"{node.aetitle}@{node.host}:{node.port}"
+
+    @staticmethod
+    def _health_color(h):
+        if h and h.get("ok") is True:
+            return "#2a2"
+        if h and h.get("ok") is False:
+            return "#d33"
+        return MUTED
+
     def _render_dests(self) -> None:
         for w in self.dest_list.winfo_children():
             w.destroy()
+        self._health_cells = {}
         if not self.app.destinations:
             ctk.CTkLabel(self.dest_list, text="No destinations yet.",
                          text_color=MUTED, anchor="w").grid(sticky="w", pady=2)
@@ -162,17 +182,25 @@ class SettingsView(View):
             row.grid(row=i, column=0, sticky="ew", pady=1)
             row.grid_columnconfigure(0, weight=1)
             ctk.CTkLabel(row, text=node.label, anchor="w").grid(
-                row=0, column=0, sticky="w")
-            ctk.CTkButton(row, text="Test", width=56,
-                          command=lambda n=node: self._test(n)).grid(
-                row=0, column=1, padx=2)
+                row=0, column=0, sticky="ew")
+            key = self._health_key(node)
+            h = self._health.get(key)
+            status = ctk.CTkLabel(row, width=80, anchor="w",
+                                  text=(h.get("status") if h else "—"),
+                                  text_color=self._health_color(h))
+            status.grid(row=0, column=1, padx=4)
+            lat = ctk.CTkLabel(
+                row, width=64, anchor="e", text_color=MUTED,
+                text=(f"{h['ms']} ms" if h and h.get("ms") is not None else ""))
+            lat.grid(row=0, column=2, padx=4)
+            self._health_cells[key] = (status, lat)
             ctk.CTkButton(row, text="Edit", width=56,
                           command=lambda n=node: self._edit_dest(n)).grid(
-                row=0, column=2, padx=2)
+                row=0, column=3, padx=2)
             ctk.CTkButton(row, text="Delete", width=66, fg_color="#a33",
                           hover_color="#c44",
                           command=lambda n=node: self._delete_dest(n)).grid(
-                row=0, column=3, padx=2)
+                row=0, column=4, padx=2)
 
     def _persist_dests(self) -> None:
         config.save_destinations(self.app.destinations)
@@ -249,23 +277,58 @@ class SettingsView(View):
         if s.bug_report_email:
             self.bug_email.insert(0, s.bug_report_email)
 
-    def _test(self, node: Node) -> None:
+    def _set_health(self, key: str, status: str, ms, ok) -> None:
+        h = self._health.setdefault(key, {})
+        h.update(status=status, ms=ms, ok=ok)
+        cell = self._health_cells.get(key)
+        if cell:
+            st, lat = cell
+            st.configure(text=status, text_color=self._health_color(h))
+            lat.configure(text=f"{ms} ms" if ms is not None else "")
+
+    def _check_all(self) -> None:
+        """Ping every destination with C-ECHO; show status inline (no popups)."""
         from ..net import scu
         from ..net.tls import client_context
+        nodes = list(self.app.destinations)
+        if not nodes:
+            return
+        self.check_btn.configure(state="disabled")
+        my_ae = self.app.settings.my_aetitle
+        done = {"n": 0}
+        lock = threading.Lock()
 
-        def work():
-            tls_args = (client_context(verify=False), node.host) if node.tls \
-                else None
-            return scu.c_echo(self.app.settings.my_aetitle, node,
-                              timeout=node.timeout, tls_args=tls_args)
+        def finish():
+            with lock:
+                done["n"] += 1
+                complete = done["n"] >= len(nodes)
+            if complete:
+                self.check_btn.configure(state="normal")
 
-        def done(res):
-            box = messagebox.showinfo if res.success else messagebox.showerror
-            box("C-ECHO", res.message, parent=self)
+        for node in nodes:
+            key = self._health_key(node)
+            self._set_health(key, "testing…", None, None)
 
-        run_threaded(self, work, done,
-                     lambda e, tb: messagebox.showerror("C-ECHO", str(e),
-                                                        parent=self))
+            def work(n=node):
+                t0 = time.time()
+                tls = (client_context(verify=False), n.host) if n.tls else None
+                res = scu.c_echo(my_ae, n, timeout=min(n.timeout, 15),
+                                 tls_args=tls)
+                return res, int((time.time() - t0) * 1000)
+
+            def ok_cb(result, key=key):
+                res, ms = result
+                if res.success:
+                    self._set_health(key, "OK", ms, True)
+                else:
+                    self._set_health(key, "FAIL", None, False)
+                finish()
+
+            def err_cb(_exc, _tb, key=key):
+                self._set_health(key, "ERROR", None, False)
+                finish()
+
+            run_threaded(self, work, ok_cb, err_cb)
 
     # -- preference setters ---------------------------------------------
     def _set_appearance(self, mode: str) -> None:
