@@ -1,13 +1,19 @@
-"""Burned-in text OCR redaction: engine behavior + Processor integration."""
+"""Burned-in text OCR redaction (Tesseract subprocess): behavior + wiring."""
 
 from __future__ import annotations
-
-import pytest
 
 from deid.engine import ocr
 from deid.engine.processing import Processor
 from deid.project import Project
 from conftest import make_ct
+
+# A minimal Tesseract TSV: a header then a confident word and a low-conf word.
+_TSV = (
+    "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\t"
+    "left\ttop\twidth\theight\tconf\ttext\n"
+    "5\t1\t1\t1\t1\t1\t10\t20\t100\t30\t95.5\tSMITH\n"
+    "5\t1\t1\t1\t1\t2\t5\t5\t40\t8\t9.0\tnoise\n"
+)
 
 
 def _gray8(size: int = 16, fill: int = 255):
@@ -23,10 +29,19 @@ def test_available_returns_bool():
     assert isinstance(ocr.available(), bool)
 
 
+def test_tsv_parsing_filters_by_confidence(monkeypatch):
+    import numpy as np
+    monkeypatch.setattr(ocr, "tesseract_path", lambda: "tesseract")
+    monkeypatch.setattr(ocr, "_run_tsv", lambda exe, png: _TSV)
+    boxes = ocr._detect_boxes(np.zeros((64, 128), dtype="uint8"),
+                              min_conf=0.5)
+    # Only the 95.5-conf word survives; the 9.0 one is below 50%.
+    assert boxes == [(20, 50, 10, 110)]
+
+
 def test_modality_filter_skips():
     ds = _gray8()
     before = ds.PixelData
-    # Modality CT is filtered out when the rule targets US only -> no-op.
     assert ocr.redact_burned_in_text(ds, modalities=["US"]) == 0
     assert ds.PixelData == before
 
@@ -40,8 +55,6 @@ def test_unavailable_is_noop(monkeypatch):
 
 
 def test_redacts_detected_region(monkeypatch):
-    # Deterministic: force availability + a fixed detected box, then confirm the
-    # region is zeroed and written back (independent of the OCR model).
     monkeypatch.setattr(ocr, "available", lambda: True)
     monkeypatch.setattr(ocr, "_detect_boxes", lambda frame, conf: [(0, 3, 0, 3)])
     ds = _gray8(16, fill=255)
@@ -70,9 +83,3 @@ def test_processor_skips_ocr_when_disabled(monkeypatch):
         .to_receiver_config()
     Processor(cfg).process(make_ct())
     assert calls["n"] == 0
-
-
-def test_real_engine_loads_if_installed():
-    pytest.importorskip("rapidocr_onnxruntime")
-    assert ocr.available()
-    assert ocr._get_engine() is not None

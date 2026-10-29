@@ -28,8 +28,8 @@ dist/
 *.manifest
 *.spec.bak
 
-# OCR models - fetched by scripts/fetch_ocr.py (pinned + hash-checked), not in git
-assets/ocr-models/
+# Bundled Tesseract OCR engine - staged by scripts/fetch_tesseract.py, not in git
+assets/tesseract/
 
 # ---------------------------------------------------------------------------
 # Editor / OS

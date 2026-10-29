@@ -1,53 +1,72 @@
-"""Burned-in pixel-text detection + redaction (optional, RapidOCR/onnxruntime).
+"""Burned-in pixel-text detection + redaction via Tesseract (subprocess).
 
 Attribute de-identification can't touch text burned into the pixels (ultrasound
-annotations, screenshots, scanned forms). This finds text regions with RapidOCR
-and blacks them out. It is an OPTIONAL extra: if ``rapidocr-onnxruntime`` isn't
-installed, ``available()`` is False and redaction is skipped with a single log
-line - the app still works.
+annotations, screenshots, scanned forms). This finds text regions with the
+Tesseract OCR engine and blacks them out.
 
-For multi-frame objects the overlay is almost always static (e.g. a US cine), so
-text is detected on the first frame and the same boxes are blanked on every
-frame - fast and correct for the common case. Detection runs on an 8-bit view;
-the boxes map 1:1 back onto the original-bit-depth pixels, which are what we zero.
+Tesseract is run as a SEPARATE PROCESS (not an in-process native library), which
+is deliberate: it can't crash the app, and it packages reliably into the exe
+(unlike onnxruntime-based engines, whose native libraries segfault under
+PyInstaller). It is OPTIONAL - if no ``tesseract`` executable is found,
+``available()`` is False and redaction is skipped with a single log line.
+
+The binary is resolved from, in order: ``DEID_TESSERACT`` env var, the bundled
+copy under ``assets/tesseract/``, ``PATH``, then the usual Windows install dirs.
+For multi-frame objects the overlay is almost always static, so text is detected
+on the first frame and the same boxes are blanked on every frame.
 """
 
 from __future__ import annotations
 
-import threading
+import csv
+import io
+import os
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
 
 import numpy as np
 
+from .. import paths
 from ..logging_setup import get_logger
 
 log = get_logger("engine.ocr")
 
-_engine = None
-_engine_lock = threading.Lock()
 _warned_missing = False
+_EXE = "tesseract.exe" if os.name == "nt" else "tesseract"
+# Don't flash a console window when calling tesseract on Windows.
+_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+
+
+def _candidate_paths():
+    env = os.environ.get("DEID_TESSERACT")
+    if env:
+        yield env
+    yield str(paths.resource_dir() / "assets" / "tesseract" / _EXE)
+    yield str(paths.app_dir() / "assets" / "tesseract" / _EXE)
+    found = shutil.which("tesseract")
+    if found:
+        yield found
+    for p in (r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+              r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe"):
+        yield p
+
+
+def tesseract_path() -> str | None:
+    """Resolve a usable tesseract executable, or None."""
+    for c in _candidate_paths():
+        try:
+            if c and Path(c).is_file():
+                return c
+        except OSError:
+            continue
+    return None
 
 
 def available() -> bool:
-    """True if the optional OCR dependency is installed.
-
-    Checks for the module WITHOUT importing it - importing onnxruntime loads
-    native libraries (slow, and in a frozen build it can crash the process), so
-    the heavy import is deferred until OCR actually runs (see ``_get_engine``).
-    """
-    try:
-        import importlib.util
-        return importlib.util.find_spec("rapidocr_onnxruntime") is not None
-    except Exception:  # noqa: BLE001
-        return False
-
-
-def _get_engine():
-    global _engine
-    with _engine_lock:
-        if _engine is None:
-            from rapidocr_onnxruntime import RapidOCR
-            _engine = RapidOCR()
-    return _engine
+    """True if a tesseract executable is available (no heavy import)."""
+    return tesseract_path() is not None
 
 
 def _to_uint8(img: np.ndarray) -> np.ndarray:
@@ -55,26 +74,46 @@ def _to_uint8(img: np.ndarray) -> np.ndarray:
     lo, hi = float(a.min()), float(a.max())
     a = (a - lo) / (hi - lo) * 255.0 if hi > lo else np.zeros_like(a)
     out = a.astype(np.uint8)
-    if out.ndim == 3 and out.shape[2] == 4:      # drop alpha for OCR
+    if out.ndim == 3 and out.shape[2] == 4:      # drop alpha
         out = out[:, :, :3]
     return out
 
 
+def _run_tsv(exe: str, png_path: str) -> str:
+    env = dict(os.environ)
+    parent = Path(exe).parent
+    if (parent / "tessdata").is_dir():
+        env.setdefault("TESSDATA_PREFIX", str(parent))
+    # --psm 11 = sparse text: find as much text as possible, any orientation.
+    proc = subprocess.run(
+        [exe, png_path, "stdout", "--psm", "11", "tsv"],
+        capture_output=True, text=True, env=env, timeout=120,
+        creationflags=_NO_WINDOW)
+    return proc.stdout
+
+
 def _detect_boxes(frame: np.ndarray, min_conf: float) -> list:
-    """Return [(y0, y1, x0, x1), ...] bounding boxes of confident text."""
-    engine = _get_engine()
-    result, _ = engine(_to_uint8(frame))
+    """Return [(y0, y1, x0, x1), ...] word boxes above the confidence floor."""
+    exe = tesseract_path()
+    if not exe:
+        return []
+    from PIL import Image
+    img = Image.fromarray(_to_uint8(frame))
     boxes = []
-    for item in (result or []):
+    with tempfile.TemporaryDirectory() as td:
+        png = os.path.join(td, "frame.png")
+        img.save(png)
+        tsv = _run_tsv(exe, png)
+    for row in csv.DictReader(io.StringIO(tsv), delimiter="\t"):
         try:
-            box, _text, score = item[0], item[1], item[2]
-            if score is None or float(score) < min_conf:
+            text = (row.get("text") or "").strip()
+            conf = float(row.get("conf", "-1"))
+            if not text or conf < min_conf * 100:
                 continue
-            xs = [p[0] for p in box]
-            ys = [p[1] for p in box]
-            boxes.append((int(min(ys)), int(max(ys)),
-                          int(min(xs)), int(max(xs))))
-        except (TypeError, IndexError, ValueError):
+            left, top = int(row["left"]), int(row["top"])
+            w, h = int(row["width"]), int(row["height"])
+            boxes.append((top, top + h, left, left + w))
+        except (ValueError, KeyError, TypeError):
             continue
     return boxes
 
@@ -93,8 +132,8 @@ def redact_burned_in_text(ds, *, min_confidence: float = 0.5,
             return 0
     if not available():
         if not _warned_missing:
-            log.warning("OCR requested but rapidocr-onnxruntime is not "
-                        "installed; skipping burned-in text redaction.")
+            log.warning("OCR requested but no tesseract executable was found; "
+                        "skipping burned-in text redaction.")
             _warned_missing = True
         return 0
     try:
@@ -104,7 +143,6 @@ def redact_burned_in_text(ds, *, min_confidence: float = 0.5,
         log.warning("OCR skipped (cannot read pixels): %s", exc)
         return 0
 
-    # Single frame (gray HxW or color HxWxC) vs multi-frame (leading frame axis).
     single = arr.ndim == 2 or (arr.ndim == 3 and arr.shape[2] in (3, 4))
     rep = arr if single else arr[0]
     try:

@@ -29,10 +29,11 @@ De-ID keeps the same engine and rebuilds the experience:
   de-identifies incoming studies against the active project and forwards them to a
   research PACS/VNA.
 - **Burned-in pixel text (OCR)** — detect and redact burned-in PHI, beyond fixed
-  top/left rectangle blanking (optional; install `requirements-ocr.txt`). OCR is
-  available when running from source; it is **not** bundled into the packaged
-  `.exe` (onnxruntime's native libraries crash under PyInstaller), where OCR
-  rules are reported unavailable and skipped.
+  top/left rectangle blanking. OCR uses the **Tesseract** engine, run as a
+  subprocess. It's optional: if no `tesseract` executable is found (bundled,
+  on `PATH`, or via the `DEID_TESSERACT` env var), OCR rules are skipped. To
+  enable it, install Tesseract (`winget install UB-Mannheim.TesseractOCR`); to
+  bundle it into the exe, run `python scripts/fetch_tesseract.py` before building.
 - **CTP compatibility** — import/export RSNA/CTP anonymizer scripts.
 
 ## Privacy & security

@@ -1,9 +1,0 @@
-# Optional OCR extra: burned-in pixel-text detection + redaction.
-# Install on top of requirements.txt to enable the "Burned-in text (OCR)" option
-# (and to bundle OCR into the built app). Without it, OCR rules are skipped at
-# run time with a log line. These wheels are large (onnxruntime + opencv).
-rapidocr-onnxruntime==1.2.3
-onnxruntime==1.31.1
-opencv-python==5.0.0.93
-shapely==2.2.0
-pyclipper==1.4.0

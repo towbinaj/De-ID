@@ -24,7 +24,8 @@ copied in deliberately (see `deid/engine/__init__.py`) and evolves here.
   maps to the same pseudonym across runs and days (re-id is local-only).
 - **Receive → auto-anon → export queue**: a C-STORE SCP inbox / watch-folder that
   de-identifies against the active project and forwards to a research PACS/VNA.
-- **OCR burned-in text**: RapidOCR-based redaction of burned-in PHI (optional).
+- **OCR burned-in text**: Tesseract-based redaction of burned-in PHI, run as a
+  subprocess (optional; `scripts/fetch_tesseract.py` stages a bundled copy).
 - **CTP anonymizer-script** import/export for RSNA/CTP interoperability.
 
 ## Security & privacy — non-negotiable
@@ -72,7 +73,8 @@ hooks or signing unless asked.
   (`app.py` nav-rail shell + `view_*.py`).
 - GUI: a left nav-rail switches focused views (Projects · Rules · Pseudonyms · Run ·
   Queue · Settings); build panels lazily, keep heavy work off the UI thread.
-- Packaging is **onedir** by design (faster launch/close, room for OCR models) —
+- Packaging is **onedir** by design (faster launch/close, room for a bundled
+  Tesseract engine) —
   diverges from the Toolkit's onefile; flip the spec's COLLECT back to a onefile EXE
   if a single portable file is ever wanted.
 
