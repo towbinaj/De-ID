@@ -1,0 +1,411 @@
+"""De-identification / morphing / pixel-blanking for DICOM objects.
+
+Vendored from the DICOM Toolkit (``store/processing.py``). Implements:
+
+* RemovePrivateTags, RemoveGroups, RemoveTags
+* AnonymizeTags via an anonymize file (REMOVE / BLANK / replacement value),
+  with consistent Study/Series/SOP UID remapping
+* CalculatedDates (baseline 19000101, age-preserving)
+* RemoveImageTop / RemoveImageLeft pixel blanking, with modality filters
+* MorphTags: look up a search-tag value in a morph file and replace tags
+
+De-ID extends this engine in sibling modules (objectrules, pseudonyms, ocr).
+"""
+
+from __future__ import annotations
+
+import threading
+from dataclasses import dataclass, field
+from datetime import date, timedelta
+from pathlib import Path
+
+from pydicom.dataset import Dataset
+from pydicom.tag import Tag
+from pydicom.uid import generate_uid
+
+from ..logging_setup import get_logger
+
+log = get_logger("engine.processing")
+
+# dicom-anonymizer keeps a process-global UID map; serialize access so the
+# Basic Profile is safe under the parallel de-identify worker pool.
+_ANON_LOCK = threading.Lock()
+
+BASELINE = date(1900, 1, 1)
+_DATE_TAGS = ["StudyDate", "SeriesDate", "AcquisitionDate", "ContentDate"]
+
+
+@dataclass
+class ReceiverConfig:
+    # [DICOM]
+    aetitle: str = "STORESCP"
+    port: int = 104
+    save_folder: str = ""
+    folder_format: str = "PATIENT"
+    # TLS (secure receiver)
+    tls: bool = False
+    tls_cert_file: str = ""
+    tls_key_file: str = ""
+    tls_ca_file: str = ""
+    require_client_cert: bool = False
+    # [ANONYMIZE]
+    remove_private_tags: bool = False
+    remove_groups: list[str] = field(default_factory=list)   # ["6000", ...]
+    remove_tags: list[str] = field(default_factory=list)     # ["00081040", ...]
+    anonymize_tags: bool = False
+    anonymize_file: str = ""
+    # Structured per-tag rules from an anonymization profile:
+    # (tag_hex, action, value) where action is REMOVE|BLANK|REPLACE|KEEP.
+    custom_rules: list = field(default_factory=list)
+    # DICOM PS3.15 Basic Application Confidentiality Profile (standards-based).
+    basic_profile: bool = False
+    retain_dates: bool = False   # Retain Longitudinal Temporal Info (study dates)
+    calculated_dates: bool = False
+    remove_image_top: int = 0
+    remove_image_top_modality: list[str] = field(default_factory=list)
+    remove_image_left: int = 0
+    remove_image_left_modality: list[str] = field(default_factory=list)
+    # [MORPH] crosswalk: first format tag is the lookup key, the rest are
+    # overwritten from the matching crosswalk row (CSV or pipe-delimited).
+    morph_tags: bool = False
+    morphing_file_format: str = ""   # "00080050|00100010|00100020"
+    morphing_file: str = ""
+    morph_has_header: bool = True    # skip the crosswalk's first (header) row
+
+
+def _parse_tag(s: str) -> Tag:
+    s = s.strip().replace(",", "").replace("x", "")
+    return Tag(int(s[:4], 16), int(s[4:8], 16))
+
+
+def _vr_for(tag: Tag) -> str:
+    """Dictionary VR for a tag, defaulting to LO for unknown/private tags."""
+    from pydicom.datadict import dictionary_VR
+    try:
+        vr = dictionary_VR(tag)
+        return "LO" if vr in ("UN", "OB", "OW", "SQ") else vr
+    except KeyError:
+        return "LO"
+
+
+def _parse_date(v: str) -> date | None:
+    v = (v or "").strip()
+    if len(v) >= 8 and v[:8].isdigit():
+        try:
+            return date(int(v[:4]), int(v[4:6]), int(v[6:8]))
+        except ValueError:
+            return None
+    return None
+
+
+class Processor:
+    """Stateful processor; keeps UID and morph tables across objects."""
+
+    def __init__(self, cfg: ReceiverConfig):
+        self.cfg = cfg
+        self._uid_map: dict[str, str] = {}
+        self._uid_lock = threading.Lock()
+        self._anon_rules = self._load_anon_rules()
+        self._keep_tags, self._custom_mods = self._load_custom_rules()
+        self._morph_format = self._load_morph_format()
+        self._morph_table = self._load_morph_table()
+
+    def _load_custom_rules(self):
+        """Split profile rules into KEEP tags (exempt from the Basic Profile)
+        and modify rules (REMOVE/BLANK/REPLACE) applied after it."""
+        keep: list[Tag] = []
+        mods: list[tuple[Tag, str, str]] = []
+        for item in self.cfg.custom_rules or []:
+            try:
+                tag_hex, action, value = (list(item) + ["", "", ""])[:3]
+                tag = _parse_tag(tag_hex)
+            except (ValueError, TypeError):
+                log.warning("Bad custom anonymize rule: %r", item)
+                continue
+            action = (action or "").upper()
+            if action == "KEEP":
+                keep.append(tag)
+            elif action in ("REMOVE", "BLANK", "REPLACE"):
+                mods.append((tag, action, value or ""))
+        return keep, mods
+
+    # -- loading ---------------------------------------------------------
+    def _load_anon_rules(self) -> list[tuple[Tag, str]]:
+        rules = []
+        if self.cfg.anonymize_tags and self.cfg.anonymize_file:
+            p = Path(self.cfg.anonymize_file)
+            if p.exists():
+                for line in p.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = line.split("|")
+                    if len(parts) >= 2:
+                        try:
+                            rules.append((_parse_tag(parts[0]), parts[1]))
+                        except ValueError:
+                            log.warning("Bad anonymize line: %s", line)
+        return rules
+
+    def _load_morph_format(self) -> list[Tag]:
+        if not (self.cfg.morph_tags and self.cfg.morphing_file_format):
+            return []
+        tags = []
+        for part in self.cfg.morphing_file_format.split("|"):
+            try:
+                tags.append(_parse_tag(part))
+            except ValueError:
+                log.error("Malformed MorphingFileFormat token: %s", part)
+                return []
+        return tags
+
+    def _load_morph_table(self) -> dict[str, list[str]]:
+        """Crosswalk: key value (col 0) -> row of values. Accepts a CSV or a
+        pipe-delimited file; skips a header row when configured."""
+        table: dict[str, list[str]] = {}
+        if not (self.cfg.morph_tags and self.cfg.morphing_file):
+            return table
+        p = Path(self.cfg.morphing_file)
+        if not p.exists():
+            return table
+        import csv as _csv
+        import io
+        text = p.read_text(encoding="utf-8")
+        # Delimiter: comma for a .csv (or comma-only content), else pipe.
+        delim = "," if (p.suffix.lower() == ".csv"
+                        or ("," in text and "|" not in text)) else "|"
+        rows = list(_csv.reader(io.StringIO(text), delimiter=delim))
+        if self.cfg.morph_has_header and rows:
+            rows = rows[1:]
+        for vals in rows:
+            if not vals or not vals[0].strip() or vals[0].lstrip().startswith("#"):
+                continue
+            key = vals[0].strip()
+            if key not in table:
+                table[key] = [v.strip() for v in vals]
+        return table
+
+    # -- per-object processing ------------------------------------------
+    def process(self, ds: Dataset) -> Dataset:
+        # Capture the date plan from the ORIGINAL dates up front - the Basic
+        # Profile empties PatientBirthDate / StudyDate, so we must read them
+        # before anything runs to preserve the patient's age.
+        date_plan = (self._compute_date_plan(ds)
+                     if self.cfg.calculated_dates else None)
+        if self.cfg.basic_profile:
+            self._apply_basic_profile(ds)
+        if self.cfg.morph_tags:
+            self._apply_morph(ds)
+        if self.cfg.remove_private_tags and not self.cfg.basic_profile:
+            ds.remove_private_tags()   # the Basic Profile already removes these
+        self._apply_remove_groups(ds)
+        self._apply_remove_tags(ds)
+        # Structured profile rules (REMOVE/BLANK/REPLACE) always apply when set;
+        # KEEP rules were already honoured inside the Basic Profile above.
+        self._apply_custom_mods(ds)
+        if self.cfg.anonymize_tags:
+            self._apply_anon_rules(ds)
+            self._remap_uids(ds)
+        if date_plan is not None:
+            self._apply_date_plan(ds, date_plan)
+        self._apply_pixel_blanking(ds)
+        return ds
+
+    # Dates/times retained under the "Retain Longitudinal Temporal Information"
+    # option (study context) - NOT PatientBirthDate, which stays removed.
+    _RETAIN_DATE_TAGS = (0x00080020, 0x00080021, 0x00080022, 0x00080023,
+                         0x0008002A, 0x00080030, 0x00080031, 0x00080032,
+                         0x00080033)
+
+    def _apply_basic_profile(self, ds: Dataset) -> None:
+        """Apply the DICOM PS3.15 Basic Application Confidentiality Profile.
+
+        Uses the dicom-anonymizer PS3.15 action tables; UIDs are replaced
+        consistently across the batch (same source UID -> same new UID). A lock
+        guards the library's process-global UID map for parallel safety.
+        NOTE: this is an *attribute* profile - it does not remove burned-in
+        pixel text; use the Remove-Image options / OCR redaction for that.
+        """
+        from dicomanonymizer import anonymize_dataset
+        from dicomanonymizer.simpledicomanonymizer import (keep as _keep,
+                                                           delete as _delete)
+
+        extra: dict = {}
+        # The bare Basic Profile leaves institution identity to an option; for
+        # safe trial sharing, remove site identifiers by default.
+        for t in (0x00080080, 0x00080081, 0x00080082, 0x00081010, 0x00081040):
+            extra[(t >> 16, t & 0xFFFF)] = _delete
+        if self.cfg.retain_dates:
+            for t in self._RETAIN_DATE_TAGS:
+                extra[(t >> 16, t & 0xFFFF)] = _keep
+        # Profile KEEP rules: exempt these tags from the Basic Profile.
+        for tag in self._keep_tags:
+            extra[(tag.group, tag.element)] = _keep
+        with _ANON_LOCK:
+            anonymize_dataset(ds, extra_anonymization_rules=extra,
+                              delete_private_tags=True)
+        # PS3.15 de-identification markers.
+        ds.PatientIdentityRemoved = "YES"
+        ds.DeidentificationMethod = "PS3.15 Basic Conf. Profile (De-ID)"
+        code = Dataset()
+        code.CodeValue = "113100"
+        code.CodingSchemeDesignator = "DCM"
+        code.CodeMeaning = "Basic Application Confidentiality Profile"
+        ds.DeidentificationMethodCodeSequence = [code]
+        fm = getattr(ds, "file_meta", None)
+        if fm is not None and "SOPInstanceUID" in ds:
+            fm.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
+
+    def _apply_remove_groups(self, ds: Dataset) -> None:
+        for grp in self.cfg.remove_groups:
+            try:
+                g = int(grp, 16)
+            except ValueError:
+                continue
+            for elem in list(ds):
+                if elem.tag.group == g:
+                    del ds[elem.tag]
+
+    def _apply_remove_tags(self, ds: Dataset) -> None:
+        for t in self.cfg.remove_tags:
+            try:
+                tag = _parse_tag(t)
+            except ValueError:
+                continue
+            if tag in ds:
+                del ds[tag]
+
+    def _apply_custom_mods(self, ds: Dataset) -> None:
+        """Apply profile REMOVE/BLANK/REPLACE rules (KEEP handled earlier)."""
+        for tag, action, value in self._custom_mods:
+            if action == "REMOVE":
+                if tag in ds:
+                    del ds[tag]
+            elif action == "BLANK":
+                if tag in ds:
+                    ds[tag].value = ""
+            elif action == "REPLACE":
+                if tag in ds:
+                    ds[tag].value = value
+                else:
+                    try:
+                        ds.add_new(tag, _vr_for(tag), value)
+                    except Exception:  # noqa: BLE001 - unknown VR / bad value
+                        pass
+
+    def _apply_anon_rules(self, ds: Dataset) -> None:
+        for tag, option in self._anon_rules:
+            if tag not in ds:
+                continue
+            if option.upper() == "REMOVE":
+                del ds[tag]
+            elif option.upper() == "BLANK":
+                ds[tag].value = ""
+            else:
+                ds[tag].value = option
+
+    def _compute_date_plan(self, ds: Dataset) -> dict:
+        """Work out the shifted dates from the ORIGINAL object: DOB ->
+        1900-01-01, StudyDate -> 1900-01-01 + age (so age is preserved), and
+        every other date shifted by the same offset. Returns {attr: 'YYYYMMDD'}
+        plus '__had_birth' so we only set PatientBirthDate when it existed."""
+        birth = _parse_date(getattr(ds, "PatientBirthDate", ""))
+        study = _parse_date(getattr(ds, "StudyDate", ""))
+        if birth and study:
+            new_study = BASELINE + timedelta(days=max((study - birth).days, 0))
+        else:
+            new_study = BASELINE
+        offset = (new_study - study).days if study else None
+        plan: dict = {"__had_birth": bool(getattr(ds, "PatientBirthDate", ""))}
+        for attr in _DATE_TAGS:
+            cur = _parse_date(getattr(ds, attr, ""))
+            if cur and offset is not None:
+                plan[attr] = (cur + timedelta(days=offset)).strftime("%Y%m%d")
+            elif attr == "StudyDate":
+                plan[attr] = new_study.strftime("%Y%m%d")
+        return plan
+
+    def _apply_date_plan(self, ds: Dataset, plan: dict) -> None:
+        for attr, val in plan.items():
+            if attr == "__had_birth":
+                continue
+            setattr(ds, attr, val)
+        if plan.get("__had_birth"):
+            ds.PatientBirthDate = BASELINE.strftime("%Y%m%d")
+
+    def _remap(self, uid: str) -> str:
+        # Locked: parallel de-identify workers share one Processor so that the
+        # same source UID always maps to the same new UID within a study.
+        with self._uid_lock:
+            if uid not in self._uid_map:
+                self._uid_map[uid] = generate_uid()
+            return self._uid_map[uid]
+
+    def _remap_uids(self, ds: Dataset) -> None:
+        for attr in ("StudyInstanceUID", "SeriesInstanceUID", "SOPInstanceUID"):
+            if getattr(ds, attr, None):
+                setattr(ds, attr, self._remap(str(getattr(ds, attr))))
+        if getattr(ds, "file_meta", None) is not None:
+            if getattr(ds.file_meta, "MediaStorageSOPInstanceUID", None):
+                ds.file_meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
+
+    def _apply_morph(self, ds: Dataset) -> None:
+        if not self._morph_format or not self._morph_table:
+            return
+        search_tag = self._morph_format[0]
+        if search_tag not in ds:
+            return
+        key = str(ds[search_tag].value).strip()
+        row = self._morph_table.get(key)
+        if not row:
+            return
+        # format[i] (i>=1) receives row[i]
+        for i, tag in enumerate(self._morph_format):
+            if i == 0:
+                continue
+            if i < len(row):
+                if tag in ds:
+                    ds[tag].value = row[i]
+                else:
+                    ds.add_new(tag, "LO", row[i])
+
+    def _apply_pixel_blanking(self, ds: Dataset) -> None:
+        top = self.cfg.remove_image_top
+        left = self.cfg.remove_image_left
+        if top <= 0 and left <= 0:
+            return
+        modality = str(getattr(ds, "Modality", "")).upper()
+        do_top = top > 0 and (not self.cfg.remove_image_top_modality
+                              or modality in
+                              [m.upper() for m in
+                               self.cfg.remove_image_top_modality])
+        do_left = left > 0 and (not self.cfg.remove_image_left_modality
+                                or modality in
+                                [m.upper() for m in
+                                 self.cfg.remove_image_left_modality])
+        if not (do_top or do_left):
+            return
+        try:
+            ts = ds.file_meta.TransferSyntaxUID
+            if ts.is_compressed:
+                log.warning("Cannot blank pixels of compressed image %s",
+                            getattr(ds, "SOPInstanceUID", "?"))
+                return
+            arr = ds.pixel_array
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Pixel blanking skipped: %s", exc)
+            return
+
+        rows = arr.shape[-2] if arr.ndim >= 2 else 0
+        cols = arr.shape[-1] if arr.ndim >= 2 else 0
+        # handle multi-sample last axis
+        if arr.ndim == 3 and arr.shape[-1] in (3, 4):
+            rows, cols = arr.shape[0], arr.shape[1]
+
+        if do_top and rows:
+            n = max(1, int(rows * top / 100))
+            arr[..., :n, :] = 0
+        if do_left and cols:
+            n = max(1, int(cols * left / 100))
+            arr[..., :, :n] = 0
+        ds.PixelData = arr.tobytes()

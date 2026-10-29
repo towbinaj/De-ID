@@ -1,0 +1,40 @@
+# ---------------------------------------------------------------------------
+# Local data -- NEVER commit. Contains PHI (pseudonym crosswalk, quarantined
+# originals) and site config (real AE titles, hostnames, IPs, ports).
+# ---------------------------------------------------------------------------
+De-ID-data/
+**/destinations.json
+**/settings.json
+**/receiver.json
+**/anon_profiles.json
+**/projects/
+**/quarantine/
+*.sqlite3
+*.log
+
+# ---------------------------------------------------------------------------
+# Python / build artifacts
+# ---------------------------------------------------------------------------
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+build/
+dist/
+*.manifest
+*.spec.bak
+
+# OCR models - fetched by scripts/fetch_ocr.py (pinned + hash-checked), not in git
+assets/ocr-models/
+
+# ---------------------------------------------------------------------------
+# Editor / OS
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
