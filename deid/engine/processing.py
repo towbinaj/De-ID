@@ -71,6 +71,11 @@ class ReceiverConfig:
     morphing_file_format: str = ""   # "00080050|00100010|00100020"
     morphing_file: str = ""
     morph_has_header: bool = True    # skip the crosswalk's first (header) row
+    # [PSEUDONYMS] consistent, persisted pseudonyms for identifier tags. The
+    # actual crosswalk is supplied to the Processor as a ``pseudonymizer``.
+    pseudonymize: bool = False
+    pseudonym_tags: list = field(default_factory=list)   # keywords or 8-hex
+    pseudonym_mode: str = "sequential"                   # sequential | hash
 
 
 def _parse_tag(s: str) -> Tag:
@@ -101,14 +106,36 @@ def _parse_date(v: str) -> date | None:
 class Processor:
     """Stateful processor; keeps UID and morph tables across objects."""
 
-    def __init__(self, cfg: ReceiverConfig):
+    def __init__(self, cfg: ReceiverConfig, pseudonymizer=None):
         self.cfg = cfg
+        self._pseudonymizer = pseudonymizer
         self._uid_map: dict[str, str] = {}
         self._uid_lock = threading.Lock()
         self._anon_rules = self._load_anon_rules()
         self._keep_tags, self._custom_mods = self._load_custom_rules()
         self._morph_format = self._load_morph_format()
         self._morph_table = self._load_morph_table()
+        self._pseudo_tags = self._resolve_pseudo_tags()
+
+    def _resolve_pseudo_tags(self) -> list:
+        """Resolve pseudonym tag specs (keyword or 8-hex) to (kind, Tag)."""
+        from pydicom.datadict import tag_for_keyword, keyword_for_tag
+        out: list[tuple[str, Tag]] = []
+        for spec in self.cfg.pseudonym_tags or []:
+            spec = str(spec).strip()
+            if not spec:
+                continue
+            s = spec.replace(",", "").replace("x", "")
+            if len(s) == 8 and all(c in "0123456789abcdefABCDEF" for c in s):
+                tag = _parse_tag(spec)
+                out.append((keyword_for_tag(tag) or spec.upper(), tag))
+            else:
+                t = tag_for_keyword(spec)
+                if t is not None:
+                    out.append((spec, Tag(t)))
+                else:
+                    log.warning("Unknown pseudonym tag spec: %s", spec)
+        return out
 
     def _load_custom_rules(self):
         """Split profile rules into KEEP tags (exempt from the Basic Profile)
@@ -192,6 +219,12 @@ class Processor:
         # before anything runs to preserve the patient's age.
         date_plan = (self._compute_date_plan(ds)
                      if self.cfg.calculated_dates else None)
+        # Capture the pseudonym plan from ORIGINAL values too - the Basic
+        # Profile empties PatientID/AccessionNumber/PatientName, so we must read
+        # them before anything runs, then stamp the pseudonyms back in at the end.
+        pseudo_plan = (self._compute_pseudonym_plan(ds)
+                       if (self.cfg.pseudonymize and self._pseudonymizer
+                           and self._pseudo_tags) else None)
         if self.cfg.basic_profile:
             self._apply_basic_profile(ds)
         if self.cfg.morph_tags:
@@ -208,8 +241,33 @@ class Processor:
             self._remap_uids(ds)
         if date_plan is not None:
             self._apply_date_plan(ds, date_plan)
+        if pseudo_plan:
+            self._apply_pseudonym_plan(ds, pseudo_plan)
         self._apply_pixel_blanking(ds)
         return ds
+
+    def _compute_pseudonym_plan(self, ds: Dataset) -> dict:
+        """Read the original identifier values and resolve each to its stable
+        pseudonym (assigning + persisting on first sight via the crosswalk)."""
+        plan: dict = {}
+        for kind, tag in self._pseudo_tags:
+            if tag in ds:
+                original = str(ds[tag].value or "").strip()
+                if original:
+                    ps = self._pseudonymizer.pseudonym_for(kind, original)
+                    if ps:
+                        plan[tag] = ps
+        return plan
+
+    def _apply_pseudonym_plan(self, ds: Dataset, plan: dict) -> None:
+        for tag, ps in plan.items():
+            if tag in ds:
+                ds[tag].value = ps
+            else:
+                try:
+                    ds.add_new(tag, _vr_for(tag), ps)
+                except Exception:  # noqa: BLE001
+                    pass
 
     # Dates/times retained under the "Retain Longitudinal Temporal Information"
     # option (study context) - NOT PatientBirthDate, which stays removed.
@@ -334,6 +392,13 @@ class Processor:
             ds.PatientBirthDate = BASELINE.strftime("%Y%m%d")
 
     def _remap(self, uid: str) -> str:
+        # With a pseudonymizer, persist UID mappings in the crosswalk so the
+        # same source UID maps to the same new UID across runs, not just within
+        # this batch. Otherwise keep the in-memory per-batch map.
+        if self._pseudonymizer is not None:
+            mapped = self._pseudonymizer.uid_for(uid)
+            if mapped:
+                return mapped
         # Locked: parallel de-identify workers share one Processor so that the
         # same source UID always maps to the same new UID within a study.
         with self._uid_lock:

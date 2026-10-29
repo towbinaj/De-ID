@@ -147,6 +147,37 @@ class RulesView(View):
             row=r, column=0, columnspan=2, sticky="w", padx=PAD)
         r += 1
 
+        section(f, "Consistent pseudonyms (persistent crosswalk)").grid(
+            row=r, column=0, columnspan=2, sticky="w", padx=PAD, pady=(10, 2))
+        r += 1
+        pbar = ctk.CTkFrame(f, fg_color="transparent")
+        self.pseudo_enable = ctk.CTkCheckBox(
+            pbar, text="Assign stable pseudonyms to identifier tags")
+        self.pseudo_enable.pack(side="left")
+        ctk.CTkLabel(pbar, text="mode").pack(side="left", padx=(PAD, 4))
+        self.pseudo_mode = ctk.CTkOptionMenu(
+            pbar, width=130, values=["sequential", "hash"])
+        self.pseudo_mode.set("sequential")
+        self.pseudo_mode.pack(side="left")
+        place(pbar, span_full=True)
+        tagbar = ctk.CTkFrame(f, fg_color="transparent")
+        self.pseudo_tag_vars: dict = {}
+        for kw, label in (("PatientID", "Patient ID"),
+                          ("PatientName", "Patient Name"),
+                          ("AccessionNumber", "Accession"),
+                          ("StudyID", "Study ID")):
+            cb = ctk.CTkCheckBox(tagbar, text=label)
+            cb.pack(side="left", padx=(0, PAD))
+            self.pseudo_tag_vars[kw] = cb
+        place(tagbar, span_full=True)
+        ctk.CTkLabel(
+            f, text="The same original value always gets the same pseudonym, "
+            "across runs and days. Re-identify from the Pseudonyms view "
+            "(local only).", anchor="w", justify="left", text_color=MUTED,
+            font=ctk.CTkFont(size=11)).grid(
+            row=r, column=0, columnspan=2, sticky="w", padx=PAD)
+        r += 1
+
         hdr = ctk.CTkFrame(f, fg_color="transparent")
         hdr.grid(row=r, column=0, columnspan=2, sticky="ew", padx=PAD,
                  pady=(12, 0))
@@ -199,6 +230,10 @@ class RulesView(View):
         self._set_entry(self.img_left, p.remove_image_left or "")
         self._set_entry(self.img_left_mod,
                         ",".join(p.remove_image_left_modality))
+        self._set_check(self.pseudo_enable, p.pseudonymize)
+        self.pseudo_mode.set(p.pseudonym_mode or "sequential")
+        for kw, cb in self.pseudo_tag_vars.items():
+            self._set_check(cb, kw in (p.pseudonym_tags or []))
         for row in self._rows:
             row.destroy()
         self._rows = []
@@ -250,6 +285,10 @@ class RulesView(View):
         p.remove_image_left_modality = self._split(self.img_left_mod.get(), ",")
         rules = [r.to_rule() for r in self._rows]
         p.rules = [r for r in rules if r is not None]
+        p.pseudonymize = bool(self.pseudo_enable.get())
+        p.pseudonym_mode = self.pseudo_mode.get()
+        p.pseudonym_tags = [kw for kw, cb in self.pseudo_tag_vars.items()
+                            if cb.get()]
         self.app.save_active_project()
         # Refresh other views (e.g. the Run view's action summary). This also
         # reloads our own form, so set the confirmation label afterwards.

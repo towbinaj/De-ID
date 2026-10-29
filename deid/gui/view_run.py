@@ -169,6 +169,11 @@ class RunView(View):
                     parent=self):
                 return
         cfg = p.to_receiver_config()
+        pseudonymizer = None
+        if p.pseudonymize and p.pseudonym_tags:
+            from ..engine.pseudonyms import ProjectPseudonymizer
+            pseudonymizer = ProjectPseudonymizer(
+                self.app.pseudonyms, p.name, p.pseudonym_tags, p.pseudonym_mode)
         files = list(self.files)
         out = str(self.out_dir)
         total = len(files)
@@ -180,10 +185,15 @@ class RunView(View):
         def worker():
             return fileproc.deidentify_files(
                 files, out, cfg, self.runner.on_item,
-                should_cancel=lambda: self.runner.cancelled)
+                should_cancel=lambda: self.runner.cancelled,
+                pseudonymizer=pseudonymizer)
 
         self.runner.run(total, "deid", worker, on_done=self._done)
 
     def _done(self) -> None:
         self.btn.configure(state="normal")
         self.cancel_btn.configure(state="disabled")
+        # Refresh the Pseudonyms view (new mappings may have been assigned).
+        pv = self.app.views.get("pseudonyms")
+        if pv is not None:
+            pv.on_project_changed()

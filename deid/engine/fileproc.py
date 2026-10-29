@@ -31,13 +31,16 @@ def _out_name(ds, src: Path) -> str:
 def deidentify_files(files: list[Path], out_dir: str | Path,
                      cfg: ReceiverConfig, on_item: OnItem,
                      should_cancel: Callable[[], bool] | None = None,
-                     processor: Processor | None = None) -> dict:
+                     processor: Processor | None = None,
+                     pseudonymizer=None) -> dict:
     """De-identify ``files`` into ``out_dir``. Returns {'ok','failed','written'}.
 
     ``processor`` may be supplied so a long-running queue can keep one UID map
-    across calls; otherwise a fresh one is created for this batch.
+    across calls; otherwise a fresh one is created for this batch. A
+    ``pseudonymizer`` (``ProjectPseudonymizer``) enables the persistent
+    consistent-pseudonym crosswalk.
     """
-    proc = processor or Processor(cfg)
+    proc = processor or Processor(cfg, pseudonymizer=pseudonymizer)
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     total = len(files)

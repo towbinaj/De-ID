@@ -1,0 +1,9 @@
+# Normalize line endings: keep LF in the repo, let Git handle the working tree.
+* text=auto
+*.py text eol=lf
+*.md text eol=lf
+*.spec text eol=lf
+*.yml text eol=lf
+*.txt text eol=lf
+*.ico binary
+*.sqlite3 binary

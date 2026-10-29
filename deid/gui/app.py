@@ -20,14 +20,16 @@ except Exception:  # noqa: BLE001 - drag-drop is optional
 from .. import APP_NAME, __version__, config, paths
 from ..logging_setup import setup as setup_logging
 from ..project import ProjectStore
+from ..engine.pseudonyms import PseudonymIndex
 from .theme import MUTED, apply_scale, view_color
 from .view_projects import ProjectsView
 from .view_rules import RulesView
 from .view_run import RunView
+from .view_pseudonyms import PseudonymsView
 from .view_settings import SettingsView
 
-# Order of the nav-rail. (Pseudonyms and Queue views are added in later phases.)
-NAV_VIEWS = [ProjectsView, RulesView, RunView]
+# Order of the nav-rail. (The receive/export Queue view is added in a later phase.)
+NAV_VIEWS = [ProjectsView, RulesView, RunView, PseudonymsView]
 CONFIG_VIEWS = [SettingsView]
 
 _APP_BASES = (ctk.CTk, TkinterDnD.DnDWrapper) if _HAS_DND else (ctk.CTk,)
@@ -46,6 +48,7 @@ class App(*_APP_BASES):
         setup_logging()
         self.settings = config.Settings.load()
         self.projects = ProjectStore()
+        self.pseudonyms = PseudonymIndex()
 
         # Resolve the active project (remembered, else first/default).
         self.active_project = (self.projects.load(self.settings.active_project)
@@ -245,6 +248,10 @@ class App(*_APP_BASES):
             self.settings.window_geometry = self.geometry()
             self.settings.last_view = getattr(self, "_current", "")
             self.settings.save()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self.pseudonyms.close()
         except Exception:  # noqa: BLE001
             pass
         self.destroy()

@@ -124,6 +124,10 @@ class Project:
             cfg.morphing_file_format = fmt
             cfg.morphing_file = self.morph_file
             cfg.morph_has_header = self.morph_has_header
+        if self.pseudonymize and self.pseudonym_tags:
+            cfg.pseudonymize = True
+            cfg.pseudonym_tags = list(self.pseudonym_tags)
+            cfg.pseudonym_mode = self.pseudonym_mode or "sequential"
         return cfg
 
     def summary(self) -> str:
