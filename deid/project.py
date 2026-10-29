@@ -55,7 +55,9 @@ class Project:
     remove_image_top_modality: list = field(default_factory=list)
     remove_image_left: int = 0
     remove_image_left_modality: list = field(default_factory=list)
-    ocr_enabled: bool = False          # wired up in the OCR phase
+    ocr_enabled: bool = False
+    ocr_min_confidence: float = 0.5
+    ocr_modalities: list = field(default_factory=list)   # [] = all modalities
 
     # -- Object / series drop rules (wired up in the drop-rules phase) ---
     drop_rules: list = field(default_factory=list)       # list[dict]
@@ -117,6 +119,9 @@ class Project:
             remove_image_top_modality=list(self.remove_image_top_modality),
             remove_image_left=int(self.remove_image_left or 0),
             remove_image_left_modality=list(self.remove_image_left_modality),
+            ocr_enabled=self.ocr_enabled,
+            ocr_min_confidence=float(self.ocr_min_confidence or 0.5),
+            ocr_modalities=list(self.ocr_modalities),
         )
         if self.morph_enabled and self.morph_key_tag and self.morph_target_tags:
             fmt = "|".join([self.morph_key_tag] + list(self.morph_target_tags))

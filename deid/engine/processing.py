@@ -76,6 +76,10 @@ class ReceiverConfig:
     pseudonymize: bool = False
     pseudonym_tags: list = field(default_factory=list)   # keywords or 8-hex
     pseudonym_mode: str = "sequential"                   # sequential | hash
+    # [OCR] burned-in pixel-text redaction (optional; needs rapidocr-onnxruntime).
+    ocr_enabled: bool = False
+    ocr_min_confidence: float = 0.5
+    ocr_modalities: list = field(default_factory=list)   # [] = all modalities
 
 
 def _parse_tag(s: str) -> Tag:
@@ -244,7 +248,19 @@ class Processor:
         if pseudo_plan:
             self._apply_pseudonym_plan(ds, pseudo_plan)
         self._apply_pixel_blanking(ds)
+        if self.cfg.ocr_enabled:
+            self._apply_ocr(ds)
         return ds
+
+    def _apply_ocr(self, ds: Dataset) -> None:
+        """Redact burned-in pixel text (optional; no-op if OCR unavailable)."""
+        from . import ocr
+        try:
+            ocr.redact_burned_in_text(
+                ds, min_confidence=self.cfg.ocr_min_confidence,
+                modalities=self.cfg.ocr_modalities)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("OCR redaction skipped: %s", exc)
 
     def _compute_pseudonym_plan(self, ds: Dataset) -> dict:
         """Read the original identifier values and resolve each to its stable

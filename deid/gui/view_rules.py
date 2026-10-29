@@ -182,9 +182,24 @@ class RulesView(View):
         self.img_top_mod = place(ctk.CTkEntry(f), "  …top modalities")
         self.img_left = place(ctk.CTkEntry(f, width=80), "Remove Image Left %")
         self.img_left_mod = place(ctk.CTkEntry(f), "  …left modalities")
-        ctk.CTkLabel(f, text="OCR-based burned-in text redaction is added in a "
-                     "later version.", text_color=MUTED,
-                     font=ctk.CTkFont(size=11), anchor="w").grid(
+        section(f, "Burned-in text (OCR)").grid(
+            row=r, column=0, columnspan=2, sticky="w", padx=PAD, pady=(10, 2))
+        r += 1
+        self.ocr_enable = ctk.CTkCheckBox(
+            f, text="Redact burned-in pixel text with OCR")
+        place(self.ocr_enable, span_full=True)
+        self.ocr_conf = place(ctk.CTkEntry(f, width=80),
+                              "Min confidence (0-1)")
+        self.ocr_mod = place(ctk.CTkEntry(f), "  …limit to modalities")
+        from ..engine import ocr as _ocr
+        _ok = _ocr.available()
+        ctk.CTkLabel(
+            f, text=("OCR engine available." if _ok else
+                     "OCR engine NOT installed — this option is skipped at run "
+                     "time. Install the 'rapidocr-onnxruntime' extra to enable it."),
+            anchor="w", justify="left",
+            text_color=(("#2e8b57", "#43c59e") if _ok else "#d9a441"),
+            font=ctk.CTkFont(size=11)).grid(
             row=r, column=0, columnspan=2, sticky="w", padx=PAD)
         r += 1
 
@@ -300,6 +315,9 @@ class RulesView(View):
         self._set_entry(self.img_left, p.remove_image_left or "")
         self._set_entry(self.img_left_mod,
                         ",".join(p.remove_image_left_modality))
+        self._set_check(self.ocr_enable, p.ocr_enabled)
+        self._set_entry(self.ocr_conf, p.ocr_min_confidence)
+        self._set_entry(self.ocr_mod, ",".join(p.ocr_modalities))
         self._set_check(self.pseudo_enable, p.pseudonymize)
         self.pseudo_mode.set(p.pseudonym_mode or "sequential")
         for kw, cb in self.pseudo_tag_vars.items():
@@ -378,6 +396,13 @@ class RulesView(View):
         p.remove_image_left_modality = self._split(self.img_left_mod.get(), ",")
         rules = [r.to_rule() for r in self._rows]
         p.rules = [r for r in rules if r is not None]
+        p.ocr_enabled = bool(self.ocr_enable.get())
+        try:
+            p.ocr_min_confidence = max(0.0, min(1.0,
+                                       float(self.ocr_conf.get() or "0.5")))
+        except ValueError:
+            p.ocr_min_confidence = 0.5
+        p.ocr_modalities = self._split(self.ocr_mod.get(), ",")
         p.pseudonymize = bool(self.pseudo_enable.get())
         p.pseudonym_mode = self.pseudo_mode.get()
         p.pseudonym_tags = [kw for kw, cb in self.pseudo_tag_vars.items()

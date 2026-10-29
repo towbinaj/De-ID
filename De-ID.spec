@@ -56,6 +56,17 @@ hiddenimports += ["openjpeg", "libjpeg"]
 hiddenimports += collect_submodules("pydicom.pixels")
 hiddenimports += collect_submodules("pydicom.pixel_data_handlers")
 
+# Optional OCR extra (rapidocr-onnxruntime): bundle it + its ONNX models only
+# when installed, so a build without the extra still works (OCR is skipped).
+for pkg in ("rapidocr_onnxruntime", "onnxruntime"):
+    try:
+        d, b, h = collect_all(pkg)
+        datas += d
+        binaries += b
+        hiddenimports += h
+    except Exception:
+        pass
+
 a = Analysis(
     ["main.py"],
     pathex=[],
