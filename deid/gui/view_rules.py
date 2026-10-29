@@ -239,6 +239,10 @@ class RulesView(View):
                  pady=(12, 0))
         ctk.CTkLabel(hdr, text="Per-tag rules  (Keep = do NOT anonymize)",
                      font=ctk.CTkFont(size=15, weight="bold")).pack(side="left")
+        ctk.CTkButton(hdr, text="Import CTP…", width=100, fg_color="gray40",
+                      command=self._import_ctp).pack(side="left", padx=(PAD, 2))
+        ctk.CTkButton(hdr, text="Export CTP…", width=100, fg_color="gray40",
+                      command=self._export_ctp).pack(side="left")
         ctk.CTkButton(hdr, text="+ Add tag", width=90,
                       command=lambda: self._add_rule()).pack(side="right")
         self.common = ctk.CTkOptionMenu(
@@ -382,8 +386,8 @@ class RulesView(View):
         except ValueError:
             return 0
 
-    def _save(self) -> None:
-        p = self.app.active_project
+    def _collect_into(self, p) -> None:
+        """Write every widget value into a project (no persistence)."""
         p.basic_profile = bool(self.basic.get())
         p.retain_dates = bool(self.retain.get())
         p.calculated_dates = bool(self.shift.get())
@@ -409,11 +413,74 @@ class RulesView(View):
                             if cb.get()]
         drops = [r.to_rule() for r in self._drop_rows]
         p.drop_rules = [d.to_dict() for d in drops if d is not None]
+
+    def _save(self) -> None:
+        self._collect_into(self.app.active_project)
         self.app.save_active_project()
         # Refresh other views (e.g. the Run view's action summary). This also
         # reloads our own form, so set the confirmation label afterwards.
         self.app.notify_project_changed()
         self.saved_lbl.configure(text="Saved.")
+
+    # -- CTP anonymizer-script interop ----------------------------------
+    def _import_ctp(self) -> None:
+        from tkinter import filedialog
+        from ..engine import ctpscript
+        path = filedialog.askopenfilename(
+            title="Import CTP anonymizer script",
+            filetypes=[("CTP script", "*.script *.xml"), ("All files", "*.*")])
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8") as fh:
+                parsed = ctpscript.parse_script(fh.read())
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Import CTP", f"Could not parse: {exc}",
+                                 parent=self)
+            return
+        # Replace the per-tag rules and set remove-private; leave other flags.
+        for row in self._rows:
+            row.destroy()
+        self._rows = []
+        for rule in parsed["rules"]:
+            self._add_rule(rule)
+        self._set_check(self.rm_private, parsed["remove_private"])
+        msg = (f"Imported {len(parsed['rules'])} tag rule(s)"
+               f"{'; remove-private ON' if parsed['remove_private'] else ''}."
+               "\n\nReview, then press Save.")
+        if parsed["unmapped"]:
+            shown = "\n  - ".join(parsed["unmapped"][:20])
+            extra = ("" if len(parsed["unmapped"]) <= 20
+                     else f"\n  …and {len(parsed['unmapped']) - 20} more")
+            msg += ("\n\nNOT imported (no direct equivalent — these are handled "
+                    "by the Basic Profile / date policy, or aren't supported):"
+                    f"\n  - {shown}{extra}")
+        messagebox.showinfo("Import CTP", msg, parent=self)
+
+    def _export_ctp(self) -> None:
+        from tkinter import filedialog
+        from ..engine import ctpscript
+        from ..project import Project
+        snap = Project(name=self.app.active_project.name)
+        self._collect_into(snap)
+        path = filedialog.asksaveasfilename(
+            title="Export CTP anonymizer script", defaultextension=".script",
+            filetypes=[("CTP script", "*.script"), ("XML", "*.xml")],
+            initialfile=f"{snap.name}.script")
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(ctpscript.to_script(snap))
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Export CTP", f"Could not write: {exc}",
+                                 parent=self)
+            return
+        messagebox.showinfo(
+            "Export CTP", f"Wrote {len(snap.rules)} tag rule(s) to:\n{path}\n\n"
+            "Note: the Basic Profile, date shifting, drop rules, pseudonyms and "
+            "OCR are listed as comments — configure those in CTP separately.",
+            parent=self)
 
     def _explain_basic(self) -> None:
         messagebox.showinfo("PS3.15 Basic Confidentiality Profile",
