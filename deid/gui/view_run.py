@@ -12,7 +12,9 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
+from .. import paths
 from ..engine import fileops, fileproc
+from ..project import _slug
 from .base import View
 from .batch import BatchRunner
 from .theme import MUTED
@@ -176,6 +178,9 @@ class RunView(View):
                 self.app.pseudonyms, p.name, p.pseudonym_tags, p.pseudonym_mode)
         files = list(self.files)
         out = str(self.out_dir)
+        drop_rules = list(p.drop_rules)
+        self._qroot = paths.quarantine_dir() / _slug(p.name)
+        self._last_result = None
         total = len(files)
         self.log.write(f"--- De-identifying {total:,} file(s) → {out} "
                        f"[{p.name}] ---")
@@ -183,16 +188,28 @@ class RunView(View):
         self.cancel_btn.configure(state="normal")
 
         def worker():
-            return fileproc.deidentify_files(
+            res = fileproc.deidentify_files(
                 files, out, cfg, self.runner.on_item,
                 should_cancel=lambda: self.runner.cancelled,
-                pseudonymizer=pseudonymizer)
+                pseudonymizer=pseudonymizer, drop_rules=drop_rules,
+                quarantine_root=self._qroot)
+            self._last_result = res
+            return res
 
         self.runner.run(total, "deid", worker, on_done=self._done)
 
     def _done(self) -> None:
         self.btn.configure(state="normal")
         self.cancel_btn.configure(state="disabled")
+        res = getattr(self, "_last_result", None)
+        if res:
+            self.log.write(
+                f"Summary — de-identified {res['ok']:,}, dropped "
+                f"{res['dropped']:,}, quarantined {res['quarantined']:,}, "
+                f"failed {res['failed']:,}.")
+            if res["quarantined"]:
+                self.log.write(f"Quarantined originals set aside in "
+                               f"{self._qroot}")
         # Refresh the Pseudonyms view (new mappings may have been assigned).
         pv = self.app.views.get("pseudonyms")
         if pv is not None:

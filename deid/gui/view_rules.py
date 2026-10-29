@@ -13,6 +13,7 @@ from tkinter import messagebox
 import customtkinter as ctk
 
 from ..engine import anon_profiles as ap
+from ..engine import objectrules as orl
 from ..project import Project
 from .base import View
 from .theme import MUTED
@@ -62,6 +63,46 @@ class _RuleRow:
             return None
         return ap.AnonRule(tag=tag, action=self.action.get(),
                            value=self.value.get())
+
+    def destroy(self) -> None:
+        self.frame.destroy()
+
+
+class _DropRuleRow:
+    """One object/series drop rule: tag · op · value · action · scope."""
+
+    def __init__(self, master, rule: orl.DropRule, on_delete):
+        self.frame = ctk.CTkFrame(master, fg_color="transparent")
+        self.frame.grid_columnconfigure(2, weight=1)
+        self.tag = ctk.CTkEntry(self.frame, width=130,
+                                placeholder_text="tag/keyword")
+        self.tag.insert(0, rule.tag)
+        self.tag.grid(row=0, column=0, padx=2, pady=2)
+        self.op = ctk.CTkOptionMenu(self.frame, values=orl.OPS, width=100)
+        self.op.set(rule.op if rule.op in orl.OPS else "equals")
+        self.op.grid(row=0, column=1, padx=2)
+        self.value = ctk.CTkEntry(self.frame, placeholder_text="value / regex")
+        self.value.insert(0, rule.value)
+        self.value.grid(row=0, column=2, padx=2, sticky="ew")
+        self.action = ctk.CTkOptionMenu(self.frame, values=orl.ACTIONS,
+                                        width=104)
+        self.action.set(rule.action if rule.action in orl.ACTIONS else "drop")
+        self.action.grid(row=0, column=3, padx=2)
+        self.scope = ctk.CTkOptionMenu(self.frame, values=orl.SCOPES, width=92)
+        self.scope.set(rule.scope if rule.scope in orl.SCOPES else "instance")
+        self.scope.grid(row=0, column=4, padx=2)
+        ctk.CTkButton(self.frame, text="X", width=28, fg_color="#a33",
+                      hover_color="#c44",
+                      command=lambda: on_delete(self)).grid(row=0, column=5,
+                                                            padx=2)
+
+    def to_rule(self) -> orl.DropRule | None:
+        tag = self.tag.get().strip()
+        if not tag:
+            return None
+        return orl.DropRule(tag=tag, op=self.op.get(),
+                            value=self.value.get(), action=self.action.get(),
+                            scope=self.scope.get())
 
     def destroy(self) -> None:
         self.frame.destroy()
@@ -206,6 +247,35 @@ class RulesView(View):
         self.rows_frame.grid(row=r, column=0, columnspan=2, sticky="ew",
                              padx=PAD)
         self.rows_frame.grid_columnconfigure(0, weight=1)
+        r += 1
+
+        dhdr = ctk.CTkFrame(f, fg_color="transparent")
+        dhdr.grid(row=r, column=0, columnspan=2, sticky="ew", padx=PAD,
+                  pady=(14, 0))
+        ctk.CTkLabel(dhdr, text="Object / series drop rules",
+                     font=ctk.CTkFont(size=15, weight="bold")).pack(side="left")
+        ctk.CTkButton(dhdr, text="+ Add rule", width=90,
+                      command=lambda: self._add_drop_rule()).pack(side="right")
+        self.presets = ctk.CTkOptionMenu(
+            dhdr, width=230, dynamic_resizing=False,
+            values=["Presets ▾"] + [label for label, _ in orl.PRESETS],
+            command=self._add_preset)
+        self.presets.set("Presets ▾")
+        self.presets.pack(side="right", padx=6)
+        r += 1
+        ctk.CTkLabel(
+            f, text="Drop (discard) or quarantine (set the original aside) whole "
+            "objects — e.g. Secondary Capture, encapsulated PDFs, scanned docs. "
+            "Series scope removes the whole series if any object matches.",
+            anchor="w", justify="left", text_color=MUTED,
+            font=ctk.CTkFont(size=11)).grid(
+            row=r, column=0, columnspan=2, sticky="w", padx=PAD, pady=(2, 4))
+        r += 1
+        self.drop_rows_frame = ctk.CTkFrame(f, fg_color="transparent")
+        self.drop_rows_frame.grid(row=r, column=0, columnspan=2, sticky="ew",
+                                  padx=PAD)
+        self.drop_rows_frame.grid_columnconfigure(0, weight=1)
+        self._drop_rows: list[_DropRuleRow] = []
 
     # -- load / save -----------------------------------------------------
     @staticmethod
@@ -240,6 +310,12 @@ class RulesView(View):
         for rule in p.rules:
             self._add_rule(rule if isinstance(rule, ap.AnonRule)
                            else ap.AnonRule(**rule))
+        for row in self._drop_rows:
+            row.destroy()
+        self._drop_rows = []
+        for d in (p.drop_rules or []):
+            self._add_drop_rule(d if isinstance(d, orl.DropRule)
+                                else orl.DropRule.from_dict(d))
         self.saved_lbl.configure(text="")
 
     def _add_rule(self, rule: ap.AnonRule | None = None) -> None:
@@ -251,6 +327,23 @@ class RulesView(View):
     def _del_rule(self, row: _RuleRow) -> None:
         row.destroy()
         self._rows.remove(row)
+
+    def _add_drop_rule(self, rule: orl.DropRule | None = None) -> None:
+        row = _DropRuleRow(self.drop_rows_frame, rule or orl.DropRule(),
+                           on_delete=self._del_drop_rule)
+        row.frame.grid(sticky="ew", pady=1)
+        self._drop_rows.append(row)
+
+    def _del_drop_rule(self, row: _DropRuleRow) -> None:
+        row.destroy()
+        self._drop_rows.remove(row)
+
+    def _add_preset(self, choice: str) -> None:
+        self.presets.set("Presets ▾")
+        for label, rule in orl.PRESETS:
+            if label == choice:
+                self._add_drop_rule(orl.DropRule.from_dict(rule.to_dict()))
+                break
 
     def _add_common(self, choice: str) -> None:
         self.common.set("Common tags ▾")
@@ -289,6 +382,8 @@ class RulesView(View):
         p.pseudonym_mode = self.pseudo_mode.get()
         p.pseudonym_tags = [kw for kw, cb in self.pseudo_tag_vars.items()
                             if cb.get()]
+        drops = [r.to_rule() for r in self._drop_rows]
+        p.drop_rules = [d.to_dict() for d in drops if d is not None]
         self.app.save_active_project()
         # Refresh other views (e.g. the Run view's action summary). This also
         # reloads our own form, so set the confirmation label afterwards.
