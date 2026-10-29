@@ -20,6 +20,11 @@ class Settings:
     receiver_aetitle: str = "DEID_SCP"
     receiver_port: int = 11112
     active_project: str = ""
+    # GUI state.
+    appearance: str = "System"          # System | Light | Dark
+    ui_scale: float = 1.15
+    window_geometry: str = ""
+    last_view: str = "projects"
     # Remembered picker selections, keyed by picker name (filled in later).
     last_destinations: dict = field(default_factory=dict)
 
