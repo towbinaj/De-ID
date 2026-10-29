@@ -26,10 +26,11 @@ from .view_projects import ProjectsView
 from .view_rules import RulesView
 from .view_run import RunView
 from .view_pseudonyms import PseudonymsView
+from .view_queue import QueueView
 from .view_settings import SettingsView
 
-# Order of the nav-rail. (The receive/export Queue view is added in a later phase.)
-NAV_VIEWS = [ProjectsView, RulesView, RunView, PseudonymsView]
+# Order of the nav-rail.
+NAV_VIEWS = [ProjectsView, RulesView, RunView, PseudonymsView, QueueView]
 CONFIG_VIEWS = [SettingsView]
 
 _APP_BASES = (ctk.CTk, TkinterDnD.DnDWrapper) if _HAS_DND else (ctk.CTk,)
@@ -49,6 +50,7 @@ class App(*_APP_BASES):
         self.settings = config.Settings.load()
         self.projects = ProjectStore()
         self.pseudonyms = PseudonymIndex()
+        self.destinations = config.load_destinations()
 
         # Resolve the active project (remembered, else first/default).
         self.active_project = (self.projects.load(self.settings.active_project)
@@ -229,6 +231,17 @@ class App(*_APP_BASES):
         self.proj_status.configure(
             text=f"Project: {self.active_project.name}")
 
+    # -- destinations ----------------------------------------------------
+    def remember_destination(self, key: str, name: str) -> None:
+        if self.settings.last_destinations.get(key) != name:
+            self.settings.last_destinations[key] = name
+            self.settings.save()
+
+    def broadcast_destinations_changed(self) -> None:
+        for view in self.views.values():
+            if hasattr(view, "on_destinations_changed"):
+                view.on_destinations_changed()
+
     # -- helpers ---------------------------------------------------------
     def _report_bug(self) -> None:
         from .bugreport import BugReportDialog
@@ -250,6 +263,13 @@ class App(*_APP_BASES):
             self.settings.save()
         except Exception:  # noqa: BLE001
             pass
+        # Stop the receive/export queue if it's running, so the process exits.
+        qv = self.views.get("queue")
+        if qv is not None and getattr(qv, "controller", None) is not None:
+            try:
+                qv.controller.stop()
+            except Exception:  # noqa: BLE001
+                pass
         try:
             self.pseudonyms.close()
         except Exception:  # noqa: BLE001

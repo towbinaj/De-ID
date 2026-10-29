@@ -6,6 +6,8 @@ A throwaway Storage SCP helper is added in the receive/export phase.
 
 from __future__ import annotations
 
+import contextlib
+
 import pytest
 from pydicom.dataset import Dataset, FileMetaDataset
 from pydicom.uid import generate_uid, ExplicitVRLittleEndian, CTImageStorage
@@ -61,3 +63,39 @@ def save(ds: Dataset, path) -> str:
 @pytest.fixture
 def ct_factory():
     return make_ct
+
+
+@contextlib.contextmanager
+def storage_scp(received=None):
+    """A throwaway local Storage SCP on an ephemeral port.
+
+    Yields ``(node, received_list)`` - every object it receives is appended to
+    ``received_list``. Everything is synthetic and localhost-only.
+    """
+    from pynetdicom import AE, evt
+    from pynetdicom.presentation import AllStoragePresentationContexts
+    from pynetdicom.sop_class import Verification
+    from deid.model import Node
+
+    store = received if received is not None else []
+
+    def handle(event):
+        ds = event.dataset
+        ds.file_meta = event.file_meta
+        store.append(ds)
+        return 0x0000
+
+    ae = AE(ae_title="TESTSCP")
+    ae.add_supported_context(Verification)
+    for cx in AllStoragePresentationContexts:
+        ae.add_supported_context(cx.abstract_syntax)
+    server = ae.start_server(
+        ("127.0.0.1", 0), block=False,
+        evt_handlers=[(evt.EVT_C_STORE, handle),
+                      (evt.EVT_C_ECHO, lambda e: 0x0000)])
+    try:
+        port = server.server_address[1]
+        yield Node(name="test", aetitle="TESTSCP", host="127.0.0.1",
+                   port=port, timeout=20), store
+    finally:
+        server.shutdown()

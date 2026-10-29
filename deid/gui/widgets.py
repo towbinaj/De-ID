@@ -134,3 +134,57 @@ def build_drop_zone(app, parent, on_paths, action_verb: str, button_specs):
 def section(master, text: str) -> ctk.CTkLabel:
     return ctk.CTkLabel(master, text=text,
                         font=ctk.CTkFont(size=15, weight="bold"), anchor="w")
+
+
+class DestinationPicker(ctk.CTkFrame):
+    """Dropdown of saved export destinations, resolving to a :class:`Node`."""
+
+    def __init__(self, master, app, label: str = "Destination",
+                 remember_key: str = "", **kw):
+        super().__init__(master, fg_color="transparent", **kw)
+        self.app = app
+        self.remember_key = remember_key
+        self._nodes = []
+        if label:
+            ctk.CTkLabel(self, text=label, width=90, anchor="w").grid(
+                row=0, column=0, padx=(0, PAD), sticky="w")
+        self.combo = ctk.CTkComboBox(self, values=[], width=300,
+                                     command=self._on_select)
+        self.combo.grid(row=0, column=1, sticky="ew")
+        self.detail = ctk.CTkLabel(self, text="", text_color=MUTED, anchor="w")
+        self.detail.grid(row=1, column=1, sticky="w", pady=(2, 0))
+        self.grid_columnconfigure(1, weight=1)
+        self.refresh()
+
+    def _remembered(self) -> str:
+        if self.remember_key:
+            return self.app.settings.last_destinations.get(self.remember_key, "")
+        return ""
+
+    def refresh(self) -> None:
+        self._nodes = sorted(self.app.destinations, key=lambda n: n.name.lower())
+        labels = [n.name for n in self._nodes]
+        self.combo.configure(values=labels)
+        if labels:
+            current = self.combo.get()
+            if current not in labels:
+                remembered = self._remembered()
+                self.combo.set(remembered if remembered in labels else labels[0])
+            self._on_select(self.combo.get())
+        else:
+            self.combo.set("")
+            self.detail.configure(text="No destinations - add some in Settings.")
+
+    def _on_select(self, choice: str) -> None:
+        node = self.get_node()
+        if node:
+            self.detail.configure(text=f"{node.aetitle} @ {node.host}:{node.port}")
+            if self.remember_key:
+                self.app.remember_destination(self.remember_key, node.name)
+
+    def get_node(self):
+        name = self.combo.get()
+        for n in self._nodes:
+            if n.name == name:
+                return n
+        return None

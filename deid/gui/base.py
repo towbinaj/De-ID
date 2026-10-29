@@ -50,3 +50,6 @@ class View(ctk.CTkFrame):
 
     def on_project_changed(self) -> None:
         """Called when the active project changes or is edited elsewhere."""
+
+    def on_destinations_changed(self) -> None:
+        """Called when the destinations registry changes."""

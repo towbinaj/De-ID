@@ -2,7 +2,16 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
+
+_ILLEGAL = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def sanitize(value: str, default: str = "") -> str:
+    """Make a DICOM-derived string safe to use as a path component."""
+    s = _ILLEGAL.sub("_", str(value or default)).strip().strip(".")
+    return s or default
 
 
 def looks_like_dicom(p: Path) -> bool:

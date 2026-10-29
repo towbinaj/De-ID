@@ -11,6 +11,7 @@ import json
 from dataclasses import dataclass, field, asdict
 
 from . import paths
+from .model import Node
 
 
 @dataclass
@@ -46,3 +47,20 @@ class Settings:
     def save(self) -> None:
         paths.config_path().write_text(
             json.dumps(asdict(self), indent=2), encoding="utf-8")
+
+
+def load_destinations() -> list[Node]:
+    """Export destinations (research PACS/VNA). Local, git-ignored."""
+    p = paths.destinations_path()
+    if p.exists():
+        try:
+            raw = json.loads(p.read_text(encoding="utf-8"))
+            return [Node.from_dict(d) for d in raw]
+        except (json.JSONDecodeError, OSError, TypeError, ValueError):
+            pass
+    return []
+
+
+def save_destinations(nodes: list[Node]) -> None:
+    paths.destinations_path().write_text(
+        json.dumps([n.to_dict() for n in nodes], indent=2), encoding="utf-8")
