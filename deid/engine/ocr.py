@@ -81,9 +81,11 @@ def _to_uint8(img: np.ndarray) -> np.ndarray:
 
 def _run_tsv(exe: str, png_path: str) -> str:
     env = dict(os.environ)
-    parent = Path(exe).parent
-    if (parent / "tessdata").is_dir():
-        env.setdefault("TESSDATA_PREFIX", str(parent))
+    # Tesseract 5.x wants TESSDATA_PREFIX pointed at the tessdata directory that
+    # holds the .traineddata files (older versions used its parent).
+    tessdata = Path(exe).parent / "tessdata"
+    if tessdata.is_dir():
+        env["TESSDATA_PREFIX"] = str(tessdata)
     # --psm 11 = sparse text: find as much text as possible, any orientation.
     proc = subprocess.run(
         [exe, png_path, "stdout", "--psm", "11", "tsv"],

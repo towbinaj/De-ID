@@ -18,18 +18,6 @@ def _selfcheck() -> int:
             fh.write(line + "\n")
 
     w("start")
-    try:
-        import importlib.util
-        present = importlib.util.find_spec("rapidocr_onnxruntime") is not None
-        w(f"rapidocr spec present={present}")
-    except Exception as exc:  # noqa: BLE001
-        w(f"find_spec error: {exc}")
-    w("raw import rapidocr...")
-    try:
-        import rapidocr_onnxruntime  # noqa: F401
-        w("raw import OK")
-    except Exception as exc:  # noqa: BLE001
-        w(f"raw import EXCEPTION: {exc}")
     w("building app...")
     try:
         from deid.gui.app import App
@@ -47,6 +35,44 @@ def _selfcheck() -> int:
     except Exception:  # noqa: BLE001
         import traceback
         w("APP EXCEPTION:\n" + traceback.format_exc())
+    w("ocr check...")
+    try:
+        from deid.engine import ocr
+        w(f"tesseract resolved: {ocr.tesseract_path()}")
+        import numpy as np
+        from PIL import Image, ImageDraw, ImageFont
+        from pydicom.dataset import Dataset, FileMetaDataset
+        from pydicom.uid import (generate_uid, ExplicitVRLittleEndian,
+                                 SecondaryCaptureImageStorage)
+        img = Image.new("L", (420, 100), 255)
+        drw = ImageDraw.Draw(img)
+        try:
+            fnt = ImageFont.truetype("arial.ttf", 36)
+        except Exception:  # noqa: BLE001
+            fnt = ImageFont.load_default()
+        drw.text((10, 30), "PATIENT SMITH JOHN", fill=0, font=fnt)
+        arr = np.array(img)
+        ds = Dataset()
+        ds.Rows, ds.Columns = arr.shape
+        ds.BitsAllocated = ds.BitsStored = 8
+        ds.HighBit = 7
+        ds.PixelRepresentation = 0
+        ds.SamplesPerPixel = 1
+        ds.PhotometricInterpretation = "MONOCHROME2"
+        ds.Modality = "OT"
+        ds.SOPClassUID = SecondaryCaptureImageStorage
+        ds.SOPInstanceUID = generate_uid()
+        ds.PixelData = arr.tobytes()
+        fm = FileMetaDataset()
+        fm.MediaStorageSOPClassUID = ds.SOPClassUID
+        fm.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
+        fm.TransferSyntaxUID = ExplicitVRLittleEndian
+        ds.file_meta = fm
+        n = ocr.redact_burned_in_text(ds, min_confidence=0.5)
+        w(f"ocr redacted regions: {n}")
+    except Exception:  # noqa: BLE001
+        import traceback
+        w("OCR EXCEPTION:\n" + traceback.format_exc())
     w("done")
     return 0
 

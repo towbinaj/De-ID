@@ -52,8 +52,11 @@ def main() -> int:
         shutil.rmtree(DEST)
     (DEST / "tessdata").mkdir(parents=True)
     n = 0
-    for f in src.iterdir():                     # exe + DLLs (loaded from own dir)
-        if f.is_file() and f.suffix.lower() in (".exe", ".dll"):
+    for f in src.iterdir():
+        # Only tesseract.exe (not the training tools) + all DLLs it loads.
+        keep = (f.suffix.lower() == ".dll"
+                or f.name.lower() == "tesseract.exe")
+        if f.is_file() and keep:
             shutil.copy2(f, DEST / f.name)
             n += 1
     td = src / "tessdata"
