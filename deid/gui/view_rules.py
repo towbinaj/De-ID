@@ -108,6 +108,17 @@ class _DropRuleRow:
         self.frame.destroy()
 
 
+# Date-mode dropdown labels -> engine mode.
+_DATE_LABELS = {
+    "Remove (blank all dates)": "remove",
+    "Keep real dates": "keep",
+    "Shift to baseline (keep age)": "baseline",
+    "Jitter ± days (per patient)": "jitter",
+    "Round (reduce precision)": "round",
+}
+_DATE_LABEL_FOR = {mode: label for label, mode in _DATE_LABELS.items()}
+
+
 class RulesView(View):
     key = "rules"
     title = "Rules"
@@ -162,13 +173,38 @@ class RulesView(View):
                       command=self._explain_basic).pack(side="left", padx=PAD)
         place(basicbar, span_full=True)
 
-        self.retain = ctk.CTkCheckBox(f, text="   └ retain study dates "
-                                      "(longitudinal)")
-        place(self.retain, span_full=True)
-        self.shift = ctk.CTkCheckBox(
-            f, text="Shift dates (DOB → 1900-01-01, keep age; study/series "
-            "dates shifted to match)")
-        place(self.shift, span_full=True)
+        self.date_menu = ctk.CTkOptionMenu(
+            f, width=280, values=list(_DATE_LABELS),
+            command=lambda _v: self._date_params_refresh())
+        place(self.date_menu, "Dates")
+        # Per-mode parameter widgets, shown one at a time below the menu.
+        dp = ctk.CTkFrame(f, fg_color="transparent")
+        self._date_baseline_wrap = ctk.CTkFrame(dp, fg_color="transparent")
+        ctk.CTkLabel(self._date_baseline_wrap,
+                     text="Baseline date (YYYYMMDD)").pack(side="left", padx=(0, 6))
+        self.date_baseline = ctk.CTkEntry(self._date_baseline_wrap, width=120)
+        self.date_baseline.pack(side="left")
+        self._date_jitter_wrap = ctk.CTkFrame(dp, fg_color="transparent")
+        ctk.CTkLabel(self._date_jitter_wrap,
+                     text="Shift within ± days").pack(side="left", padx=(0, 6))
+        self.date_jitter = ctk.CTkEntry(self._date_jitter_wrap, width=80)
+        self.date_jitter.pack(side="left")
+        self._date_round_wrap = ctk.CTkFrame(dp, fg_color="transparent")
+        ctk.CTkLabel(self._date_round_wrap, text="Round to").pack(side="left",
+                                                                 padx=(0, 6))
+        self.date_round = ctk.CTkOptionMenu(self._date_round_wrap, width=100,
+                                            values=["year", "month"])
+        self.date_round.pack(side="left")
+        place(dp, "")
+        ctk.CTkLabel(
+            f, text="Baseline keeps age (DOB→anchor). Jitter shifts all of a "
+            "patient's dates by the same random ±days (intervals + age kept, "
+            "real dates hidden). Round coarsens to year or month.",
+            anchor="w", justify="left", text_color=MUTED,
+            font=ctk.CTkFont(size=11)).grid(row=r, column=0, columnspan=2,
+                                            sticky="w", padx=PAD)
+        r += 1
+
         self.rm_private = ctk.CTkCheckBox(f, text="Remove private tags")
         place(self.rm_private, span_full=True)
 
@@ -309,8 +345,12 @@ class RulesView(View):
 
     def _load(self, p: Project) -> None:
         self._set_check(self.basic, p.basic_profile)
-        self._set_check(self.retain, p.retain_dates)
-        self._set_check(self.shift, p.calculated_dates)
+        self.date_menu.set(_DATE_LABEL_FOR.get(p.effective_date_mode(),
+                                               _DATE_LABEL_FOR["remove"]))
+        self._set_entry(self.date_baseline, p.date_baseline or "19000101")
+        self._set_entry(self.date_jitter, p.date_jitter_days)
+        self.date_round.set(p.date_round or "year")
+        self._date_params_refresh()
         self._set_check(self.rm_private, p.remove_private)
         self._set_entry(self.rm_groups, "|".join(p.remove_groups))
         self._set_entry(self.rm_tags, "|".join(p.remove_tags))
@@ -386,11 +426,32 @@ class RulesView(View):
         except ValueError:
             return 0
 
+    def _date_params_refresh(self) -> None:
+        mode = _DATE_LABELS.get(self.date_menu.get(), "remove")
+        for w in (self._date_baseline_wrap, self._date_jitter_wrap,
+                  self._date_round_wrap):
+            w.pack_forget()
+        if mode == "baseline":
+            self._date_baseline_wrap.pack(anchor="w")
+        elif mode == "jitter":
+            self._date_jitter_wrap.pack(anchor="w")
+        elif mode == "round":
+            self._date_round_wrap.pack(anchor="w")
+
     def _collect_into(self, p) -> None:
         """Write every widget value into a project (no persistence)."""
         p.basic_profile = bool(self.basic.get())
-        p.retain_dates = bool(self.retain.get())
-        p.calculated_dates = bool(self.shift.get())
+        mode = _DATE_LABELS.get(self.date_menu.get(), "remove")
+        p.date_mode = mode
+        p.date_baseline = self.date_baseline.get().strip() or "19000101"
+        try:
+            p.date_jitter_days = max(0, int(self.date_jitter.get() or "30"))
+        except ValueError:
+            p.date_jitter_days = 30
+        p.date_round = self.date_round.get()
+        # Keep the legacy flags consistent for older readers.
+        p.retain_dates = (mode == "keep")
+        p.calculated_dates = (mode == "baseline")
         p.remove_private = bool(self.rm_private.get())
         p.remove_groups = self._split(self.rm_groups.get(), "|,")
         p.remove_tags = self._split(self.rm_tags.get(), "|,")

@@ -42,8 +42,15 @@ class Project:
 
     # -- Anonymization (standards-based) --------------------------------
     basic_profile: bool = True
-    retain_dates: bool = False
     remove_private: bool = True
+    # Date handling: remove | keep | baseline | jitter | round. The legacy
+    # retain_dates / calculated_dates flags are still accepted (older projects)
+    # and map to "keep" / "baseline" when date_mode is unset.
+    date_mode: str = ""
+    date_baseline: str = "19000101"   # baseline mode anchor (DOB maps here)
+    date_jitter_days: int = 30        # jitter mode: per-patient +/- days
+    date_round: str = "year"          # round mode: year | month
+    retain_dates: bool = False
     calculated_dates: bool = False
     # Per-tag rules: REMOVE / BLANK / REPLACE / KEEP (list[AnonRule]).
     rules: list = field(default_factory=list)
@@ -105,13 +112,30 @@ class Project:
                 out.append((rn.tag, rn.action, rn.value))
         return out
 
+    def effective_date_mode(self) -> str:
+        """Resolve the date mode, honoring the legacy flags for old projects."""
+        m = (self.date_mode or "").lower()
+        if m in ("remove", "keep", "baseline", "jitter", "round"):
+            return m
+        if self.calculated_dates:
+            return "baseline"
+        if self.retain_dates:
+            return "keep"
+        return "remove"
+
     def to_receiver_config(self) -> ReceiverConfig:
         """Map this Project onto the engine config (stages it supports today)."""
+        mode = self.effective_date_mode()
         cfg = ReceiverConfig(
             basic_profile=self.basic_profile,
-            retain_dates=self.retain_dates,
             remove_private_tags=self.remove_private,
-            calculated_dates=self.calculated_dates,
+            date_mode=mode,
+            date_baseline=self.date_baseline or "19000101",
+            date_jitter_days=int(self.date_jitter_days or 0),
+            date_jitter_salt=self.name,   # stable per-project per-patient offset
+            date_round=self.date_round or "year",
+            retain_dates=(mode == "keep"),
+            calculated_dates=(mode == "baseline"),
             custom_rules=self.custom_rules(),
             remove_groups=list(self.remove_groups),
             remove_tags=list(self.remove_tags),
@@ -140,9 +164,14 @@ class Project:
         parts = []
         parts.append("PS3.15 Basic Profile" if self.basic_profile
                      else "NO Basic Profile")
-        if self.calculated_dates:
-            parts.append("shift dates (keep age)")
-        elif self.retain_dates:
+        mode = self.effective_date_mode()
+        if mode == "baseline":
+            parts.append(f"shift dates (baseline {self.date_baseline[:4]})")
+        elif mode == "jitter":
+            parts.append(f"jitter dates ±{self.date_jitter_days}d")
+        elif mode == "round":
+            parts.append(f"round dates ({self.date_round})")
+        elif mode == "keep":
             parts.append("retain study dates")
         if self.rules:
             parts.append(f"{len(self.rules)} tag rule(s)")

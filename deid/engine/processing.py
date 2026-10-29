@@ -14,6 +14,7 @@ De-ID extends this engine in sibling modules (objectrules, pseudonyms, ocr).
 
 from __future__ import annotations
 
+import hashlib
 import threading
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -33,6 +34,12 @@ _ANON_LOCK = threading.Lock()
 
 BASELINE = date(1900, 1, 1)
 _DATE_TAGS = ["StudyDate", "SeriesDate", "AcquisitionDate", "ContentDate"]
+DATE_MODES = ["remove", "keep", "baseline", "jitter", "round"]
+
+
+def _round_date(d: date, how: str) -> date:
+    """Coarsen a date: 'month' -> first of the month, else first of the year."""
+    return date(d.year, d.month, 1) if how == "month" else date(d.year, 1, 1)
 
 
 @dataclass
@@ -61,6 +68,13 @@ class ReceiverConfig:
     basic_profile: bool = False
     retain_dates: bool = False   # Retain Longitudinal Temporal Info (study dates)
     calculated_dates: bool = False
+    # Date handling mode: remove | keep | baseline | jitter | round. When set it
+    # supersedes retain_dates/calculated_dates (both kept for back-compat).
+    date_mode: str = ""
+    date_baseline: str = "19000101"   # baseline mode: DOB maps to this anchor
+    date_jitter_days: int = 30        # jitter mode: per-patient shift, +/- days
+    date_jitter_salt: str = ""        # keeps each patient's jitter offset stable
+    date_round: str = "year"          # round mode: year | month
     remove_image_top: int = 0
     remove_image_top_modality: list[str] = field(default_factory=list)
     remove_image_left: int = 0
@@ -222,7 +236,8 @@ class Processor:
         # Profile empties PatientBirthDate / StudyDate, so we must read them
         # before anything runs to preserve the patient's age.
         date_plan = (self._compute_date_plan(ds)
-                     if self.cfg.calculated_dates else None)
+                     if self._date_mode() in ("baseline", "jitter", "round")
+                     else None)
         # Capture the pseudonym plan from ORIGINAL values too - the Basic
         # Profile empties PatientID/AccessionNumber/PatientName, so we must read
         # them before anything runs, then stamp the pseudonyms back in at the end.
@@ -309,7 +324,7 @@ class Processor:
         # safe trial sharing, remove site identifiers by default.
         for t in (0x00080080, 0x00080081, 0x00080082, 0x00081010, 0x00081040):
             extra[(t >> 16, t & 0xFFFF)] = _delete
-        if self.cfg.retain_dates:
+        if self._date_mode() == "keep":
             for t in self._RETAIN_DATE_TAGS:
                 extra[(t >> 16, t & 0xFFFF)] = _keep
         # Profile KEEP rules: exempt these tags from the Basic Profile.
@@ -378,34 +393,84 @@ class Processor:
             else:
                 ds[tag].value = option
 
+    def _date_mode(self) -> str:
+        """Effective date mode, honoring the legacy retain/calculated flags."""
+        m = (self.cfg.date_mode or "").lower()
+        if m in DATE_MODES:
+            return m
+        if self.cfg.calculated_dates:
+            return "baseline"
+        if self.cfg.retain_dates:
+            return "keep"
+        return "remove"
+
+    def _jitter_offset(self, ds: Dataset) -> int:
+        """A stable per-patient shift in [-N, +N] days (same across runs)."""
+        n = max(0, int(self.cfg.date_jitter_days or 0))
+        if n == 0:
+            return 0
+        pid = str(getattr(ds, "PatientID", "") or "")
+        h = int(hashlib.sha256(
+            f"{self.cfg.date_jitter_salt}|{pid}".encode()).hexdigest(), 16)
+        return (h % (2 * n + 1)) - n
+
     def _compute_date_plan(self, ds: Dataset) -> dict:
-        """Work out the shifted dates from the ORIGINAL object: DOB ->
-        1900-01-01, StudyDate -> 1900-01-01 + age (so age is preserved), and
-        every other date shifted by the same offset. Returns {attr: 'YYYYMMDD'}
-        plus '__had_birth' so we only set PatientBirthDate when it existed."""
+        """Work out replacement dates from the ORIGINAL object (read before the
+        Basic Profile empties them). Returns {attr: 'YYYYMMDD'}, including
+        'PatientBirthDate' only when the object had one. Behavior by mode:
+
+        * baseline - DOB -> the configured baseline, StudyDate -> baseline + age
+          (age preserved), every other date shifted by the same offset.
+        * jitter   - every date (incl. DOB) shifted by the same per-patient
+          random offset within +/-N days (intervals and age preserved exactly).
+        * round    - each date coarsened to the year (or year+month).
+        """
+        mode = self._date_mode()
         birth = _parse_date(getattr(ds, "PatientBirthDate", ""))
         study = _parse_date(getattr(ds, "StudyDate", ""))
-        if birth and study:
-            new_study = BASELINE + timedelta(days=max((study - birth).days, 0))
-        else:
-            new_study = BASELINE
-        offset = (new_study - study).days if study else None
-        plan: dict = {"__had_birth": bool(getattr(ds, "PatientBirthDate", ""))}
-        for attr in _DATE_TAGS:
-            cur = _parse_date(getattr(ds, attr, ""))
-            if cur and offset is not None:
-                plan[attr] = (cur + timedelta(days=offset)).strftime("%Y%m%d")
-            elif attr == "StudyDate":
-                plan[attr] = new_study.strftime("%Y%m%d")
+        had_birth = bool(getattr(ds, "PatientBirthDate", ""))
+        plan: dict = {}
+
+        if mode == "baseline":
+            base = _parse_date(self.cfg.date_baseline) or BASELINE
+            if birth and study:
+                new_study = base + timedelta(days=max((study - birth).days, 0))
+            else:
+                new_study = base
+            offset = (new_study - study).days if study else None
+            for attr in _DATE_TAGS:
+                cur = _parse_date(getattr(ds, attr, ""))
+                if cur and offset is not None:
+                    plan[attr] = (cur + timedelta(days=offset)).strftime("%Y%m%d")
+                elif attr == "StudyDate":
+                    plan[attr] = new_study.strftime("%Y%m%d")
+            if had_birth:
+                plan["PatientBirthDate"] = base.strftime("%Y%m%d")
+
+        elif mode == "jitter":
+            off = self._jitter_offset(ds)
+            for attr in _DATE_TAGS:
+                cur = _parse_date(getattr(ds, attr, ""))
+                if cur:
+                    plan[attr] = (cur + timedelta(days=off)).strftime("%Y%m%d")
+            if birth:
+                plan["PatientBirthDate"] = (
+                    birth + timedelta(days=off)).strftime("%Y%m%d")
+
+        elif mode == "round":
+            how = (self.cfg.date_round or "year").lower()
+            for attr in _DATE_TAGS:
+                cur = _parse_date(getattr(ds, attr, ""))
+                if cur:
+                    plan[attr] = _round_date(cur, how).strftime("%Y%m%d")
+            if birth:
+                plan["PatientBirthDate"] = _round_date(birth, how).strftime("%Y%m%d")
+
         return plan
 
     def _apply_date_plan(self, ds: Dataset, plan: dict) -> None:
         for attr, val in plan.items():
-            if attr == "__had_birth":
-                continue
             setattr(ds, attr, val)
-        if plan.get("__had_birth"):
-            ds.PatientBirthDate = BASELINE.strftime("%Y%m%d")
 
     def _remap(self, uid: str) -> str:
         # With a pseudonymizer, persist UID mappings in the crosswalk so the
