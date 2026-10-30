@@ -221,35 +221,76 @@ def _representative_frame(arr):
     return (arr if single else arr[0]), single
 
 
-def scan_dataset(ds, phi=None, *, min_confidence: float = 0.5,
-                 modalities=None) -> list[dict]:
-    """Find burned-in text in ``ds`` and classify it WITHOUT modifying pixels.
+def _blank_boxes(arr, boxes, single) -> None:
+    for (y0, y1, x0, x1) in boxes:
+        if single:
+            arr[y0:y1 + 1, x0:x1 + 1, ...] = 0
+        else:
+            arr[:, y0:y1 + 1, x0:x1 + 1, ...] = 0
 
-    Returns a list of findings ``{text, category, conf, box}`` where category is
-    'name'/'id'/'date' (matched this study's metadata) or 'suspect' (looks like
-    PHI by pattern). ``phi`` is a :class:`phimatch.PhiSet`; when omitted it is
-    built from ``ds`` (callers that have the ORIGINAL dataset should pass it, as
-    de-identified metadata no longer contains the values to match).
+
+def _write_back(ds, arr, ts) -> bool:
+    try:
+        ds.PixelData = arr.tobytes()
+        if ts.is_compressed:
+            from pydicom.uid import ExplicitVRLittleEndian
+            ds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+            ds["PixelData"].VR = "OW" if int(
+                getattr(ds, "BitsAllocated", 16)) > 8 else "OB"
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log.warning("OCR write-back failed: %s", exc)
+        return False
+
+
+def scan_and_redact(ds, phi=None, *, min_confidence: float = 0.5,
+                    modalities=None, redact: bool = False) -> tuple[list, int]:
+    """Single OCR pass: classify burned-in text and, if ``redact``, blank PHI.
+
+    Returns ``(findings, redacted)``. ``findings`` are classify_words dicts
+    ('name'/'id'/'date' matched this study's metadata, or 'suspect' by pattern).
+    When ``redact`` is set, the boxes matched to metadata (not suspects) are
+    blacked out IN PLACE and ``redacted`` is the count; suspects are never
+    auto-redacted (they need review). ``phi`` is built from ``ds`` if omitted.
+    No-op when OCR is unavailable, the modality is filtered out, or pixels can't
+    be read.
     """
-    if not _modality_ok(ds, modalities) or not available():
-        if not available():
-            _warn_unavailable()
-        return []
+    if not _modality_ok(ds, modalities):
+        return [], 0
+    if not available():
+        _warn_unavailable()
+        return [], 0
     if phi is None:
         from . import phimatch
         phi = phimatch.build_phi(ds)
     try:
+        ts = ds.file_meta.TransferSyntaxUID
         arr = ds.pixel_array
     except Exception as exc:  # noqa: BLE001
-        log.warning("OCR scan skipped (cannot read pixels): %s", exc)
-        return []
-    rep, _ = _representative_frame(arr)
+        log.warning("OCR skipped (cannot read pixels): %s", exc)
+        return [], 0
+    rep, single = _representative_frame(arr)
     try:
-        words = _ocr_words(rep, min_confidence)
+        hits = classify_words(_ocr_words(rep, min_confidence), phi)
     except Exception as exc:  # noqa: BLE001
         log.warning("OCR scan failed: %s", exc)
-        return []
-    return classify_words(words, phi)
+        return [], 0
+    redacted = 0
+    if redact:
+        boxes = [h["box"] for h in hits if h["category"] != "suspect"]
+        if boxes:
+            _blank_boxes(arr, boxes, single)
+            if _write_back(ds, arr, ts):
+                redacted = len(boxes)
+                log.info("OCR redacted %d PHI region(s).", redacted)
+    return hits, redacted
+
+
+def scan_dataset(ds, phi=None, *, min_confidence: float = 0.5,
+                 modalities=None) -> list[dict]:
+    """Classify burned-in text WITHOUT modifying pixels (read-only wrapper)."""
+    return scan_and_redact(ds, phi, min_confidence=min_confidence,
+                           modalities=modalities, redact=False)[0]
 
 
 def redact_burned_in_text(ds, *, min_confidence: float = 0.5, modalities=None,
@@ -258,10 +299,13 @@ def redact_burned_in_text(ds, *, min_confidence: float = 0.5, modalities=None,
 
     ``mode`` = 'all' blanks every detected text region (highest recall);
     'phi' blanks only regions whose text matches this study's metadata PHI
-    (precise — keeps scan parameters), using ``phi`` (a ``phimatch.PhiSet``;
-    built from ``ds`` if not supplied). No-op (returns 0) when OCR is
-    unavailable, the modality is filtered out, or pixels can't be read/written.
+    (precise — keeps scan parameters). No-op (returns 0) when OCR is unavailable,
+    the modality is filtered out, or pixels can't be read/written.
     """
+    if mode == "phi":
+        return scan_and_redact(ds, phi, min_confidence=min_confidence,
+                               modalities=modalities, redact=True)[1]
+    # mode 'all': blank every detected region.
     if not _modality_ok(ds, modalities):
         return 0
     if not available():
@@ -273,39 +317,18 @@ def redact_burned_in_text(ds, *, min_confidence: float = 0.5, modalities=None,
     except Exception as exc:  # noqa: BLE001
         log.warning("OCR skipped (cannot read pixels): %s", exc)
         return 0
-
     rep, single = _representative_frame(arr)
     try:
-        if mode == "phi":
-            if phi is None:
-                from . import phimatch
-                phi = phimatch.build_phi(ds)
-            hits = classify_words(_ocr_words(rep, min_confidence), phi)
-            boxes = [h["box"] for h in hits if h["category"] != "suspect"]
-        else:
-            boxes = _detect_boxes(rep, min_confidence)
+        boxes = _detect_boxes(rep, min_confidence)
     except Exception as exc:  # noqa: BLE001
         log.warning("OCR detection failed: %s", exc)
         return 0
-    if not boxes:
+    if not boxes or not _write_back_after_blank(ds, arr, boxes, single, ts):
         return 0
-
-    for (y0, y1, x0, x1) in boxes:
-        if single:
-            arr[y0:y1 + 1, x0:x1 + 1, ...] = 0
-        else:
-            arr[:, y0:y1 + 1, x0:x1 + 1, ...] = 0
-
-    try:
-        ds.PixelData = arr.tobytes()
-        if ts.is_compressed:
-            from pydicom.uid import ExplicitVRLittleEndian
-            ds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
-            ds["PixelData"].VR = "OW" if int(
-                getattr(ds, "BitsAllocated", 16)) > 8 else "OB"
-    except Exception as exc:  # noqa: BLE001
-        log.warning("OCR write-back failed: %s", exc)
-        return 0
-    log.info("OCR redacted %d burned-in text region(s) [mode=%s].",
-             len(boxes), mode)
+    log.info("OCR redacted %d burned-in text region(s) [mode=all].", len(boxes))
     return len(boxes)
+
+
+def _write_back_after_blank(ds, arr, boxes, single, ts) -> bool:
+    _blank_boxes(arr, boxes, single)
+    return _write_back(ds, arr, ts)
