@@ -31,9 +31,9 @@ from .view_pseudonyms import PseudonymsView
 from .view_queue import QueueView
 from .view_settings import SettingsView
 
-# Order of the nav-rail. Quick is the guided front door; the rest is the full
-# control panel for repeat / power users.
-NAV_VIEWS = [QuickView, ProjectsView, RulesView, RunView, PixelScanView,
+# Order of the nav-rail. Pixel PHI Scan leads (verify burned-in PHI first), then
+# Quick as the guided front door, then the full control panel for power users.
+NAV_VIEWS = [PixelScanView, QuickView, ProjectsView, RulesView, RunView,
              PseudonymsView, QueueView]
 CONFIG_VIEWS = [SettingsView]
 
