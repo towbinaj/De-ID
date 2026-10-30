@@ -7,6 +7,8 @@ views. Views are built lazily and switched with ``tkraise`` (no re-render).
 
 from __future__ import annotations
 
+import threading
+
 import customtkinter as ctk
 
 try:
@@ -103,6 +105,105 @@ class App(*_APP_BASES):
         self.select(last if last in self._view_classes
                     else next(iter(self._view_classes)))
 
+        # Self-update: clean any leftover folders from a prior swap, then do a
+        # quiet background check (built exe only; a no-op from source).
+        self._update_info = None
+        from .. import updater
+        if updater.can_self_update():
+            try:
+                updater.cleanup_leftovers()
+            except Exception:  # noqa: BLE001
+                pass
+            self.after(2500, lambda: self.check_for_updates(manual=False))
+
+    # -- self-update -----------------------------------------------------
+    def check_for_updates(self, manual: bool = False) -> None:
+        """Background check against GitHub Releases (GET-only, never blocks)."""
+        from .. import updater
+
+        def work():
+            info = updater.check_latest()
+            try:
+                self.after(0, lambda: self._on_update_result(info, manual))
+            except RuntimeError:
+                pass   # window closed before the check returned
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_update_result(self, info, manual: bool) -> None:
+        from tkinter import messagebox
+        from .. import updater
+        self._update_info = info
+        if info:
+            self.update_btn.configure(text=f"⬆ Update to v{info.version}")
+            self.update_btn.pack(side="right", padx=6)
+            if manual and messagebox.askyesno(
+                    "Update available",
+                    f"Version {info.version} is available "
+                    f"(you have {updater.current_version()}).\n\nInstall now? "
+                    "The app will restart; your settings are kept."):
+                self.start_update()
+        elif manual:
+            messagebox.showinfo(
+                "Up to date",
+                f"You are on the latest version "
+                f"({updater.current_version()}).")
+
+    def start_update(self) -> None:
+        from tkinter import messagebox
+        from .. import updater
+        info = self._update_info
+        if not info:
+            return
+        if not updater.can_self_update():
+            messagebox.showinfo(
+                "Update", f"Version {info.version} is available. Download it "
+                "from the Releases page, or rebuild from source (self-update "
+                "needs the built app).")
+            return
+        if not messagebox.askyesno(
+                "Install update",
+                f"Download and install v{info.version}? The app will close and "
+                "reopen on the new version. Your settings are preserved."):
+            return
+
+        top = ctk.CTkToplevel(self)
+        top.title("Updating")
+        top.geometry("360x110")
+        top.transient(self)
+        ctk.CTkLabel(top, text=f"Downloading v{info.version}…").pack(
+            pady=(18, 6))
+        bar = ctk.CTkProgressBar(top, width=300)
+        bar.set(0)
+        bar.pack(pady=6)
+
+        def prog(frac):
+            self.after(0, lambda: bar.set(frac))
+
+        def work():
+            try:
+                updater.apply_update(info, progress=prog)
+                self.after(0, self._finish_update)
+            except Exception as exc:  # noqa: BLE001
+                self.after(0, lambda e=exc: self._update_failed(top, e))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _finish_update(self) -> None:
+        # The swap helper is waiting for this process to exit, then relaunches.
+        self._on_close()
+
+    def _update_failed(self, top, exc) -> None:
+        from tkinter import messagebox
+        try:
+            top.destroy()
+        except Exception:  # noqa: BLE001
+            pass
+        messagebox.showerror(
+            "Update failed",
+            f"The update could not be installed:\n{exc}\n\n"
+            "Your current version is unchanged.")
+
     # -- sidebar ---------------------------------------------------------
     def _build_sidebar(self) -> None:
         self.sidebar = ctk.CTkFrame(self, width=220, corner_radius=0)
@@ -140,6 +241,12 @@ class App(*_APP_BASES):
                       fg_color="#b5651d", hover_color="#c8761f",
                       font=ctk.CTkFont(size=11, weight="bold"),
                       command=self._report_bug).pack(side="right", padx=6)
+        # Shown only when a background check finds a newer release.
+        self.update_btn = ctk.CTkButton(
+            status, text="", height=20, width=150,
+            fg_color="#2e8b57", hover_color="#3fa06a",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            command=self.start_update)
         self._update_proj_status()
 
     def _register_views(self) -> None:

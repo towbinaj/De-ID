@@ -14,6 +14,14 @@ Grab the latest `De-ID-vX.Y.Z.zip` from the
 [**Releases**](https://github.com/towbinaj/De-ID/releases) page, unzip it, and run
 `De-ID.exe` — no install. Each release also ships a `.sha256` to verify the zip.
 
+**Automatic updates.** On launch, De-ID quietly checks the Releases page for a
+newer version (a read-only HTTPS request to GitHub — nothing about your machine,
+settings, or data is ever sent). If one is available, an **Update** button
+appears; click it (or Settings → *Check for updates*) and De-ID downloads the new
+version, verifies its checksum, installs it, and restarts. **Your settings and
+pseudonym crosswalk are kept** — they live outside the program folder. If you are
+offline or behind a firewall, the check is skipped silently.
+
 ## Why a separate app
 
 The DICOM Toolkit's "De-identify Files" tab does the job but crams ~20 controls
@@ -56,15 +64,21 @@ De-ID keeps the same engine and rebuilds the experience around focused views.
 - **Receive → anonymize → export queue** — a C-STORE inbox / watch-folder that
   de-identifies incoming studies against the active project and forwards them to a
   research PACS/VNA.
+- **Portable destinations** — export your export destinations to a CSV or JSON
+  file and import them back (Settings → Export… / Import file…). The CSV matches
+  the DICOM Toolkit's, so the two apps can share a destination list; handy for
+  carrying settings to a new version or another machine.
 - **CTP compatibility** — import/export RSNA/CTP anonymizer scripts.
 
 ## Privacy & security
 
 Everything identifying stays **local**. The pseudonym crosswalk, re-id crosswalk
 CSVs, pixel-scan reports, quarantined originals, destinations, and settings live in
-a git-ignored `De-ID-data/` folder next to the app. The public repository contains
-no real AE titles, hosts, IPs, credentials, or patient data. Diagnostics in a bug
-report are PHI-scrubbed before they leave the machine.
+a git-ignored data folder — in the installed app, a per-user folder
+(`%LOCALAPPDATA%\De-ID`) kept outside the program folder so updates never touch
+it; when run from source, a portable `De-ID-data/` in the project tree. The public
+repository contains no real AE titles, hosts, IPs, credentials, or patient data.
+Diagnostics in a bug report are PHI-scrubbed before they leave the machine.
 
 **De-ID is a tool, not a guarantee.** The PS3.15 Basic Profile acts on standard
 confidentiality attributes only; burned-in pixel text and unusual private

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
 from tkinter import messagebox
 
 import customtkinter as ctk
@@ -90,6 +91,7 @@ class SettingsView(View):
         self._build_prefs()
         self._build_receiver()
         self._build_destinations()
+        self._build_about()
 
     # -- preferences -----------------------------------------------------
     def _build_prefs(self) -> None:
@@ -136,20 +138,41 @@ class SettingsView(View):
         self.check_btn = ctk.CTkButton(hdr, text="Check all", width=90,
                                        command=self._check_all)
         self.check_btn.pack(side="left", padx=PAD)
-        ctk.CTkButton(hdr, text="Import from DICOM Toolkit…", width=200,
-                      fg_color="gray40",
-                      command=self._import_toolkit).pack(side="left")
         ctk.CTkButton(hdr, text="+ Add", width=70,
                       command=self._add_dest).pack(side="right")
+        # Import / export toolbar (CSV or JSON, Toolkit-compatible).
+        bar = ctk.CTkFrame(f, fg_color="transparent")
+        bar.grid(row=8, column=0, columnspan=2, sticky="ew", padx=PAD,
+                 pady=(0, 2))
+        ctk.CTkButton(bar, text="Export…", width=90,
+                      command=self._export).pack(side="left")
+        ctk.CTkButton(bar, text="Import file…", width=110,
+                      command=self._import_file).pack(side="left", padx=PAD)
+        ctk.CTkButton(bar, text="Import from DICOM Toolkit…", width=200,
+                      fg_color="gray40",
+                      command=self._import_toolkit).pack(side="left")
         self.dest_list = ctk.CTkFrame(f, fg_color="transparent")
-        self.dest_list.grid(row=8, column=0, columnspan=2, sticky="ew",
+        self.dest_list.grid(row=9, column=0, columnspan=2, sticky="ew",
                             padx=PAD)
         self.dest_list.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(f, text=f"Stored locally in {paths.destinations_path()}",
                      text_color=MUTED, font=ctk.CTkFont(size=11),
-                     anchor="w").grid(row=9, column=0, columnspan=2,
+                     anchor="w").grid(row=10, column=0, columnspan=2,
                                       sticky="w", padx=PAD, pady=(4, 0))
         self._render_dests()
+
+    def _build_about(self) -> None:
+        from .. import __version__
+        f = self.form
+        section(f, "About").grid(row=11, column=0, columnspan=2, sticky="w",
+                                 padx=PAD, pady=(12, 4))
+        row = ctk.CTkFrame(f, fg_color="transparent")
+        row.grid(row=12, column=0, columnspan=2, sticky="w", padx=PAD)
+        ctk.CTkLabel(row, text=f"Version {__version__}").pack(side="left")
+        ctk.CTkButton(
+            row, text="Check for updates", width=150,
+            command=lambda: self.app.check_for_updates(manual=True)).pack(
+            side="left", padx=PAD)
 
     def _row(self, r, label, widget):
         ctk.CTkLabel(self.form, text=label, anchor="w", width=160).grid(
@@ -231,6 +254,64 @@ class SettingsView(View):
             return
         self.app.destinations = [n for n in self.app.destinations if n is not node]
         self._persist_dests()
+
+    def _export(self) -> None:
+        from tkinter import filedialog
+        from .. import destio
+        nodes = list(self.app.destinations)
+        if not nodes:
+            messagebox.showinfo("Export", "No destinations to export.",
+                                parent=self)
+            return
+        path = filedialog.asksaveasfilename(
+            title="Export destinations", defaultextension=".csv",
+            filetypes=[("CSV", "*.csv"), ("JSON", "*.json")],
+            initialfile="destinations.csv", parent=self)
+        if not path:
+            return
+        try:
+            if path.lower().endswith(".json"):
+                destio.export_json(nodes, path)
+            else:
+                destio.export_csv(nodes, path)
+        except OSError as exc:
+            messagebox.showerror("Export failed", str(exc), parent=self)
+            return
+        messagebox.showinfo(
+            "Export", f"Exported {len(nodes)} destination(s) to:\n{path}",
+            parent=self)
+
+    def _import_file(self) -> None:
+        from tkinter import filedialog
+        from .. import destio
+        path = filedialog.askopenfilename(
+            title="Import destinations (CSV or JSON)",
+            filetypes=[("Destinations", "*.csv *.json"),
+                       ("CSV", "*.csv"), ("JSON", "*.json"),
+                       ("All files", "*.*")], parent=self)
+        if not path:
+            return
+        try:
+            result = destio.import_any(Path(path))
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Import failed", str(exc), parent=self)
+            return
+        added, skipped = destio.merge_into_saved(result)
+        self.app.destinations = config.load_destinations()
+        self.app.broadcast_destinations_changed()
+        self._render_dests()
+        msg = [f"Imported {added} new destination(s)."]
+        if skipped:
+            msg.append(f"Skipped {skipped} already present.")
+        if result.skipped_nonstorage:
+            n = result.skipped_nonstorage
+            msg.append(f"Ignored {n} non-storage (worklist / HL7) "
+                       f"entr{'y' if n == 1 else 'ies'}.")
+        if result.warnings:
+            msg.append("")
+            msg.append("Check these entries:")
+            msg.extend(result.warnings[:10])
+        messagebox.showinfo("Import complete", "\n".join(msg), parent=self)
 
     def _import_toolkit(self) -> None:
         from tkinter import filedialog

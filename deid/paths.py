@@ -1,15 +1,20 @@
 """Filesystem locations for De-ID.
 
-The app is designed to run as a portable, double-click executable (a PyInstaller
-``onedir`` folder). Config, projects, the pseudonym index, logs, and quarantined
-originals live in a ``De-ID-data`` folder next to the executable when that
-location is writable (portable mode), otherwise they fall back to the user's
-%APPDATA% (installed mode). This keeps a copied-to-a-USB-stick deployment
-self-contained while still working when installed to a read-only Program Files.
+The built app is a PyInstaller ``onedir`` folder, distributed as a ZIP and
+updated in place by replacing that whole folder (see ``updater``). So user data
+must live **outside** the app folder, or a self-update would wipe it:
 
-Everything written here is local and git-ignored - it can contain PHI (the
-pseudonym crosswalk, quarantined objects) and site config, so it must never
-reach the public repository.
+* **Built exe:** data lives in a stable per-user folder (``%LOCALAPPDATA%\\De-ID``
+  on Windows), untouched by replacing the program folder. On first run of a build
+  that uses this layout, an older portable ``De-ID-data`` folder sitting next to
+  the exe is migrated over once (copied, never deleted).
+* **From source (dev):** data stays in a portable ``De-ID-data`` folder in the
+  project tree, so a checkout is self-contained and tests are unaffected.
+
+Either location can be overridden with the ``DEID_DATA`` environment variable
+(used by tests). Everything written here is local and git-ignored - it can
+contain PHI (the pseudonym crosswalk, quarantined objects) and site config, so
+it must never reach the public repository.
 """
 
 from __future__ import annotations
@@ -57,11 +62,61 @@ def _writable(path: Path) -> bool:
         return False
 
 
+_portable_migration_done = False
+
+
+def _portable_dir() -> Path:
+    """The legacy portable data folder next to the running program."""
+    return app_dir() / DATA_FOLDER_NAME
+
+
+def _stable_user_dir() -> Path:
+    """A stable per-user folder outside the app folder (survives updates)."""
+    base = (os.environ.get("LOCALAPPDATA")
+            or os.environ.get("APPDATA")
+            or str(Path.home()))
+    return Path(base) / "De-ID"
+
+
+def _migrate_portable_once(stable: Path) -> None:
+    """One-time carry-over of an older portable ``De-ID-data`` folder beside the
+    exe (pre-stable-location layout). Runs only while the stable folder has no
+    settings yet; copies entries that are not already there and never deletes
+    the source, so it is safe to call repeatedly.
+    """
+    global _portable_migration_done
+    if _portable_migration_done:
+        return
+    _portable_migration_done = True
+    if (stable / "settings.json").exists():
+        return
+    old = _portable_dir()
+    try:
+        if not old.is_dir() or old.resolve() == stable.resolve():
+            return
+        entries = list(old.iterdir())
+    except OSError:
+        return
+    import shutil
+    for item in entries:
+        dest = stable / item.name
+        if dest.exists():
+            continue
+        try:
+            if item.is_dir():
+                shutil.copytree(item, dest)
+            else:
+                shutil.copy2(item, dest)
+        except OSError:
+            continue
+
+
 def data_dir() -> Path:
     """Directory for user config, projects, the pseudonym index, and logs.
 
-    Prefers a portable folder next to the executable; falls back to %APPDATA%.
-    Can be overridden with the ``DEID_DATA`` environment variable (used by tests).
+    Built exe: a stable per-user folder (so a self-update, which replaces the
+    app folder, never touches it), migrating an older portable folder once. From
+    source: the portable folder in the project tree. ``DEID_DATA`` overrides both.
     """
     override = os.environ.get(ENV_OVERRIDE)
     if override:
@@ -69,14 +124,19 @@ def data_dir() -> Path:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
-    portable = app_dir() / DATA_FOLDER_NAME
+    if is_frozen():
+        stable = _stable_user_dir()
+        stable.mkdir(parents=True, exist_ok=True)
+        _migrate_portable_once(stable)
+        return stable
+
+    # Running from source (dev): keep a self-contained portable folder.
+    portable = _portable_dir()
     if _writable(portable):
         return portable
-
-    base = os.environ.get("APPDATA") or str(Path.home())
-    fallback = Path(base) / "De-ID"
-    fallback.mkdir(parents=True, exist_ok=True)
-    return fallback
+    stable = _stable_user_dir()
+    stable.mkdir(parents=True, exist_ok=True)
+    return stable
 
 
 def config_path() -> Path:

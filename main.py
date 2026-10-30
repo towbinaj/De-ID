@@ -81,6 +81,11 @@ def main() -> int:
     argv = sys.argv[1:]
     if argv and argv[0] == "selfcheck":
         return _selfcheck()
+    # Self-update swap helper: invoked on the freshly-extracted exe. It waits for
+    # the old process to exit, swaps the new build into place, and relaunches.
+    if argv and argv[0] == "apply-update" and len(argv) >= 4:
+        from deid.updater import run_apply_update
+        return run_apply_update(argv[1], int(argv[2]), argv[3])
     from deid.gui.app import main as gui_main
     gui_main()
     return 0
