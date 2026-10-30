@@ -99,8 +99,18 @@ class PseudonymIndex:
         return n
 
     def pseudonym(self, project: str, kind: str, original: str,
-                  mode: str = "sequential") -> str:
+                  mode: str = "sequential", *, prefix: str = "",
+                  separator: str = "_", pad: int = 0) -> str:
         """Return the stable pseudonym for ``original`` (assigning on first use).
+
+        Modes:
+
+        * ``sequential`` → ``<KIND>-000001`` (fixed 6-digit running number),
+        * ``hash``       → ``<KIND>-<salted hash>``,
+        * ``custom``     → ``<prefix><separator><n>`` with ``n`` zero-padded to
+          ``pad`` digits, e.g. ``TRIAL_0001`` (``prefix`` is typically the trial
+          name; the counter runs per kind, so patients and accessions number
+          independently from 1). When ``prefix`` is empty the kind label is used.
 
         Empty/blank originals are never mapped (returns "").
         """
@@ -116,6 +126,12 @@ class PseudonymIndex:
                     f"{self._salt()}|{project}|{kind}|{original}".encode()
                 ).hexdigest()[:10].upper()
                 pseudonym = f"{_prefix_for(kind)}-{digest}"
+            elif mode == "custom":
+                n = self._next_counter(project, kind)
+                label = (prefix or "").strip() or _prefix_for(kind)
+                sep = separator if separator is not None else "_"
+                num = f"{n:0{pad}d}" if pad and pad > 0 else str(n)
+                pseudonym = f"{label}{sep}{num}"
             else:
                 n = self._next_counter(project, kind)
                 pseudonym = f"{_prefix_for(kind)}-{n:06d}"
@@ -211,14 +227,20 @@ class ProjectPseudonymizer:
     """Adapter the engine uses: binds an index to one project + policy."""
 
     def __init__(self, index: PseudonymIndex, project: str,
-                 tags: list, mode: str = "sequential"):
+                 tags: list, mode: str = "sequential", *,
+                 prefix: str = "", separator: str = "_", pad: int = 0):
         self.index = index
         self.project = project
         self.tags = list(tags or [])
         self.mode = mode or "sequential"
+        self.prefix = prefix or ""
+        self.separator = separator if separator is not None else "_"
+        self.pad = int(pad or 0)
 
     def pseudonym_for(self, kind: str, original: str) -> str:
-        return self.index.pseudonym(self.project, kind, original, self.mode)
+        return self.index.pseudonym(self.project, kind, original, self.mode,
+                                    prefix=self.prefix,
+                                    separator=self.separator, pad=self.pad)
 
     def uid_for(self, original: str) -> str:
         return self.index.uid(self.project, original)

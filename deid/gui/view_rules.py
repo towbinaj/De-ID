@@ -254,9 +254,16 @@ class RulesView(View):
         self.pseudo_enable.pack(side="left")
         ctk.CTkLabel(pbar, text="mode").pack(side="left", padx=(PAD, 4))
         self.pseudo_mode = ctk.CTkOptionMenu(
-            pbar, width=130, values=["sequential", "hash"])
+            pbar, width=120, values=["sequential", "hash", "custom"])
         self.pseudo_mode.set("sequential")
         self.pseudo_mode.pack(side="left")
+        ctk.CTkLabel(pbar, text="trial").pack(side="left", padx=(PAD, 4))
+        self.pseudo_prefix = ctk.CTkEntry(pbar, width=130,
+                                          placeholder_text="e.g. ACRIN6698")
+        self.pseudo_prefix.pack(side="left")
+        ctk.CTkLabel(pbar, text="digits").pack(side="left", padx=(PAD, 4))
+        self.pseudo_pad = ctk.CTkEntry(pbar, width=48)
+        self.pseudo_pad.pack(side="left")
         place(pbar, span_full=True)
         tagbar = ctk.CTkFrame(f, fg_color="transparent")
         self.pseudo_tag_vars: dict = {}
@@ -370,6 +377,8 @@ class RulesView(View):
         self._set_entry(self.ocr_mod, ",".join(p.ocr_modalities))
         self._set_check(self.pseudo_enable, p.pseudonymize)
         self.pseudo_mode.set(p.pseudonym_mode or "sequential")
+        self._set_entry(self.pseudo_prefix, p.pseudonym_prefix)
+        self._set_entry(self.pseudo_pad, p.pseudonym_pad or 4)
         for kw, cb in self.pseudo_tag_vars.items():
             self._set_check(cb, kw in (p.pseudonym_tags or []))
         for row in self._rows:
@@ -472,6 +481,8 @@ class RulesView(View):
         p.ocr_modalities = self._split(self.ocr_mod.get(), ",")
         p.pseudonymize = bool(self.pseudo_enable.get())
         p.pseudonym_mode = self.pseudo_mode.get()
+        p.pseudonym_prefix = self.pseudo_prefix.get().strip()
+        p.pseudonym_pad = self._int0(self.pseudo_pad.get()) or 4
         p.pseudonym_tags = [kw for kw, cb in self.pseudo_tag_vars.items()
                             if cb.get()]
         drops = [r.to_rule() for r in self._drop_rows]

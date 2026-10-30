@@ -18,7 +18,6 @@ from typing import Callable
 from . import paths
 from .logging_setup import get_logger
 from .engine import fileops, fileproc
-from .engine.pseudonyms import ProjectPseudonymizer
 from .net import scu
 from .net.scp import InboxSCP
 from .project import _slug
@@ -137,11 +136,7 @@ class QueueController:
         if proj is None:
             return
         cfg = proj.to_receiver_config()
-        pseudonymizer = None
-        if proj.pseudonymize and proj.pseudonym_tags:
-            pseudonymizer = ProjectPseudonymizer(
-                self.pseudonyms, proj.name, proj.pseudonym_tags,
-                proj.pseudonym_mode)
+        pseudonymizer = proj.build_pseudonymizer(self.pseudonyms)
         outdir = (self.output_dir or
                   paths.data_dir() / "queue-out" / _slug(proj.name))
         qroot = paths.quarantine_dir() / _slug(proj.name)

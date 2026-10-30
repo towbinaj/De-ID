@@ -13,12 +13,15 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 
 from .. import paths
-from ..engine import fileops, fileproc
+from ..engine import fileops, fileproc, scan
 from ..project import _slug
 from .base import View
 from .batch import BatchRunner
 from .theme import MUTED
 from .widgets import LogBox, PAD, build_drop_zone, run_threaded
+
+_OK = "#5cb85c"
+_WARN = "#d9a441"
 
 
 class RunView(View):
@@ -29,6 +32,8 @@ class RunView(View):
     def build(self) -> None:
         self.files: list[Path] = []
         self.out_dir: Path | None = None
+        self._scan = None
+        self._scanning = False
 
         self.body.grid_rowconfigure(4, weight=1)
         self.body.grid_columnconfigure(0, weight=1)
@@ -50,9 +55,16 @@ class RunView(View):
         self.out_lbl = ctk.CTkLabel(info, text="", anchor="w",
                                     text_color=MUTED, wraplength=720)
         self.out_lbl.grid(row=1, column=0, sticky="ew", pady=(2, 0))
+        self.preview_lbl = ctk.CTkLabel(info, text="", anchor="w",
+                                        text_color=MUTED, wraplength=720)
+        self.preview_lbl.grid(row=2, column=0, sticky="ew", pady=(2, 0))
+        self.sep_lbl = ctk.CTkLabel(info, text="", anchor="w", justify="left",
+                                    wraplength=720,
+                                    font=ctk.CTkFont(size=13, weight="bold"))
+        self.sep_lbl.grid(row=3, column=0, sticky="ew", pady=(2, 0))
         self.warn_lbl = ctk.CTkLabel(info, text="", anchor="w",
-                                     text_color="#d9a441", wraplength=720)
-        self.warn_lbl.grid(row=2, column=0, sticky="ew", pady=(2, 0))
+                                     text_color=_WARN, wraplength=720)
+        self.warn_lbl.grid(row=4, column=0, sticky="ew", pady=(2, 0))
 
         btnbar = ctk.CTkFrame(self.body, fg_color="transparent")
         btnbar.grid(row=2, column=0, sticky="w", padx=PAD, pady=(PAD, 2))
@@ -87,6 +99,34 @@ class RunView(View):
                 "— output would NOT be de-identified. Edit it in Rules.")
         else:
             self.warn_lbl.configure(text="")
+        self._render_preview()
+
+    def _render_preview(self) -> None:
+        """Header-only preview: counts + whether patients stay separate."""
+        s = self._scan
+        if not self.files or s is None:
+            self.preview_lbl.configure(text="")
+            self.sep_lbl.configure(text="")
+            return
+        self.preview_lbl.configure(text=scan.overview(s))
+        level, msg = scan.patient_separation(self.app.active_project, s)
+        color = {"ok": _OK, "warn": _WARN}.get(level, MUTED)
+        self.sep_lbl.configure(text=msg, text_color=color)
+
+    def _rescan(self) -> None:
+        if self._scanning or not self.files:
+            self._render_preview()
+            return
+        self._scanning = True
+        files = list(self.files)
+        drop_rules = list(self.app.active_project.drop_rules)
+        run_threaded(self, lambda: scan.scan_files(files, drop_rules=drop_rules),
+                     self._scan_done)
+
+    def _scan_done(self, result) -> None:
+        self._scanning = False
+        self._scan = result
+        self._render_preview()
 
     def on_show(self) -> None:
         self._refresh()
@@ -139,11 +179,13 @@ class RunView(View):
 
     def _clear(self) -> None:
         self.files = []
+        self._scan = None
         self._update_count()
 
     def _update_count(self) -> None:
         self.files = list(dict.fromkeys(self.files))
         self.count_lbl.configure(text=f"{len(self.files):,} file(s).")
+        self._rescan()
 
     def requeue(self, requeue_paths: list) -> None:
         self.files = list(dict.fromkeys(Path(p) for p in requeue_paths))
@@ -170,12 +212,15 @@ class RunView(View):
                     "tag rules). Write the files through unchanged anyway?",
                     parent=self):
                 return
+        if self._scan is not None:
+            level, msg = scan.patient_separation(p, self._scan)
+            if level == "warn" and not messagebox.askyesno(
+                    "Patients would be merged",
+                    msg + "\n\nRun anyway? (Turn on pseudonyms in Rules to give "
+                    "each patient a stable ID instead.)", parent=self):
+                return
         cfg = p.to_receiver_config()
-        pseudonymizer = None
-        if p.pseudonymize and p.pseudonym_tags:
-            from ..engine.pseudonyms import ProjectPseudonymizer
-            pseudonymizer = ProjectPseudonymizer(
-                self.app.pseudonyms, p.name, p.pseudonym_tags, p.pseudonym_mode)
+        pseudonymizer = p.build_pseudonymizer(self.app.pseudonyms)
         files = list(self.files)
         out = str(self.out_dir)
         drop_rules = list(p.drop_rules)

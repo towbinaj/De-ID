@@ -72,7 +72,13 @@ class Project:
     # -- Pseudonym policy (wired up in the pseudonym phase) --------------
     pseudonymize: bool = False
     pseudonym_tags: list = field(default_factory=list)   # keyword list
-    pseudonym_mode: str = "sequential"                   # sequential | hash
+    pseudonym_mode: str = "sequential"                   # sequential|hash|custom
+    # Custom scheme (e.g. a trial): "<prefix><separator><zero-padded number>",
+    # like TRIAL_0001. The counter runs per tag, so patients (PatientID) and
+    # studies (AccessionNumber) number independently from 1.
+    pseudonym_prefix: str = ""                           # e.g. the trial name
+    pseudonym_separator: str = "_"
+    pseudonym_pad: int = 4                               # leading-zero width
 
     # -- Crosswalk morphing (external CSV; engine already supports it) ---
     morph_enabled: bool = False
@@ -159,6 +165,33 @@ class Project:
             cfg.pseudonym_mode = self.pseudonym_mode or "sequential"
         return cfg
 
+    def build_pseudonymizer(self, index):
+        """The crosswalk adapter for this project (or ``None`` when off).
+
+        Central factory so the Quick / Run views and the receive queue all build
+        pseudonyms identically from the project's policy.
+        """
+        if not (self.pseudonymize and self.pseudonym_tags):
+            return None
+        from .engine.pseudonyms import ProjectPseudonymizer
+        return ProjectPseudonymizer(
+            index, self.name, self.pseudonym_tags,
+            mode=self.pseudonym_mode or "sequential",
+            prefix=self.pseudonym_prefix,
+            separator=self.pseudonym_separator or "_",
+            pad=int(self.pseudonym_pad or 0))
+
+    def pseudonym_example(self, n: int = 1) -> str:
+        """A sample pseudonym for the current scheme, e.g. ``TRIAL_0001``."""
+        if (self.pseudonym_mode or "") == "custom":
+            pad = int(self.pseudonym_pad or 0)
+            num = f"{n:0{pad}d}" if pad > 0 else str(n)
+            prefix = (self.pseudonym_prefix or "").strip() or "ID"
+            return f"{prefix}{self.pseudonym_separator or '_'}{num}"
+        if (self.pseudonym_mode or "") == "hash":
+            return "ID-7F3A9C2B10"
+        return f"ID-{n:06d}"
+
     def summary(self) -> str:
         """One-line plain-English description of what this project will do."""
         parts = []
@@ -182,7 +215,10 @@ class Project:
         if self.ocr_enabled:
             parts.append("OCR redaction")
         if self.pseudonymize:
-            parts.append(f"pseudonyms ({self.pseudonym_mode})")
+            if (self.pseudonym_mode or "") == "custom":
+                parts.append(f"pseudonyms ({self.pseudonym_example(1)}…)")
+            else:
+                parts.append(f"pseudonyms ({self.pseudonym_mode})")
         if self.morph_enabled:
             parts.append("crosswalk morph")
         if self.export_enabled and self.export_dest:
@@ -225,10 +261,17 @@ class ProjectStore:
             p.unlink()
 
     def ensure_default(self) -> Project:
-        """Return the first project, creating a sensible default if none exist."""
+        """Return the first project, creating a sensible default if none exist.
+
+        The default keeps patients separate out of the box: per-patient
+        pseudonyms on PatientID / AccessionNumber, so a folder of mixed patients
+        never collapses into one blank identity.
+        """
         existing = self.list()
         if existing:
             return existing[0]
-        proj = Project(name="Default (PS3.15 Basic)")
+        proj = Project(name="Default (PS3.15 Basic)",
+                       pseudonymize=True,
+                       pseudonym_tags=["PatientID", "AccessionNumber"])
         self.save(proj)
         return proj

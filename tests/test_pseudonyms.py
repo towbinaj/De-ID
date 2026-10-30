@@ -43,6 +43,48 @@ def test_hash_mode_is_stable(tmp_path):
     assert idx.pseudonym("C", "PatientID", "MRN1", mode="hash") == h1
 
 
+def test_custom_mode_trial_scheme(tmp_path):
+    idx = PseudonymIndex(tmp_path / "p.sqlite3")
+    # TrialName_0001, zero-padded; counter runs per kind.
+    a = idx.pseudonym("T", "PatientID", "MRN1", mode="custom",
+                      prefix="ACRIN6698", separator="_", pad=4)
+    assert a == "ACRIN6698_0001"
+    assert idx.pseudonym("T", "PatientID", "MRN2", mode="custom",
+                         prefix="ACRIN6698", pad=4) == "ACRIN6698_0002"
+    assert idx.pseudonym("T", "PatientID", "MRN1", mode="custom",
+                         prefix="ACRIN6698", pad=4) == a          # reuse
+    # Accessions number independently from 1 under the same prefix.
+    assert idx.pseudonym("T", "AccessionNumber", "ACC1", mode="custom",
+                         prefix="ACRIN6698", pad=4) == "ACRIN6698_0001"
+
+
+def test_custom_mode_pad_zero_is_unpadded(tmp_path):
+    idx = PseudonymIndex(tmp_path / "p.sqlite3")
+    assert idx.pseudonym("T", "PatientID", "X", mode="custom",
+                         prefix="TRIAL", pad=0) == "TRIAL_1"
+
+
+def test_project_build_pseudonymizer_uses_custom_scheme(tmp_path):
+    idx = PseudonymIndex(tmp_path / "p.sqlite3")
+    proj = Project(name="Trial", basic_profile=True, pseudonymize=True,
+                   pseudonym_tags=["PatientID", "AccessionNumber"],
+                   pseudonym_mode="custom", pseudonym_prefix="TRIAL",
+                   pseudonym_pad=3)
+    ps = proj.build_pseudonymizer(idx)
+    assert ps is not None
+    cfg = proj.to_receiver_config()
+    out = Processor(cfg, pseudonymizer=ps).process(
+        make_ct(PatientID="MRN1", AccessionNumber="ACC1"))
+    assert str(out.PatientID) == "TRIAL_001"
+    assert str(out.AccessionNumber) == "TRIAL_001"
+    assert proj.pseudonym_example(2) == "TRIAL_002"
+
+
+def test_build_pseudonymizer_none_when_off():
+    proj = Project(name="x", pseudonymize=False)
+    assert proj.build_pseudonymizer(object()) is None
+
+
 def test_reverse_lookup(tmp_path):
     idx = PseudonymIndex(tmp_path / "p.sqlite3")
     ps = idx.pseudonym("C", "PatientName", "DOE^JANE")

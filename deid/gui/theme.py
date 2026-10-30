@@ -37,6 +37,7 @@ def mono(size: int = 13) -> ctk.CTkFont:
 
 # Per-view accent colors (nav-rail accent bar + view title). Keyed by view key.
 VIEW_COLORS: dict[str, str] = {
+    "quick": "#4f9dde",         # blue (the guided front door)
     "projects": "#cf6f9b",      # pink (the de-id identity color)
     "rules": "#d4a017",         # gold
     "pseudonyms": "#5aa9c9",    # cyan
