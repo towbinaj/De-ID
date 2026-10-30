@@ -16,21 +16,31 @@ The app is separate from (and does not import) the DICOM Toolkit. The engine was
 copied in deliberately (see `deid/engine/__init__.py`) and evolves here.
 
 ## What it adds over the Toolkit's de-id tab
+- **Quick de-identify**: a guided front-door view (drop folder → header-scan
+  preview → one click). The preview counts **distinct patients** and warns, with a
+  one-click fix, when a run would collapse a mixed folder into one blank identity
+  (`engine/scan.py`); the default project keeps patients separate out of the box.
 - **Projects**: a named JSON config bundling profile + dates + object-drop rules +
   pixel/OCR + pseudonym policy + source + destination; pick one and run with a click.
 - **Object/series drop rules**: drop or quarantine whole SOP instances / series by
   rule (e.g. `Modality == SC`, Secondary Capture / Encapsulated PDF, scanned docs).
 - **Pseudonym index**: a persistent SQLite crosswalk so the same patient/accession
-  maps to the same pseudonym across runs and days (re-id is local-only).
+  maps to the same pseudonym across runs and days (re-id is local-only). Modes:
+  sequential, salted hash, or a **custom trial scheme** (`TRIAL_0001`, configurable
+  zero-padding; patients and accessions counted independently).
+- **Re-id crosswalk CSV** (`crosswalk.py`): after a run, one row per study mapping
+  original → new patient/accession, written to the local `crosswalks/` folder only.
 - **Receive → auto-anon → export queue**: a C-STORE SCP inbox / watch-folder that
   de-identifies against the active project and forwards to a research PACS/VNA.
 - **OCR burned-in text**: Tesseract-based redaction of burned-in PHI, run as a
   subprocess (optional; `scripts/fetch_tesseract.py` stages a bundled copy).
   Two modes: redact *all* detected text, or **PHI-only** — OCR text is matched
   against the study's own metadata (`engine/phimatch.py`) so scan parameters are
-  kept. A read-only **Pixel PHI Scan** (`pixelscan.py`, Pixel PHI Scan view)
-  QA-scans a folder and reports matches + pattern "suspects"; its report lists
-  burned-in text (PHI) → local `pixelscan/` folder only, never logged.
+  kept. A **Pixel PHI Scan** (`pixelscan.py`, Pixel PHI Scan view) QA-scans a folder
+  and reports per **study → series → instance** with a **pass / corrected / needs
+  review** status, can redact matches into corrected copies, and flags pattern
+  "suspects"; its overview + findings reports list burned-in text (PHI) → local
+  `pixelscan/` folder only, never logged.
 - **CTP anonymizer-script** import/export for RSNA/CTP interoperability.
 
 ## Security & privacy — non-negotiable
@@ -74,13 +84,16 @@ hooks or signing unless asked.
 ## Architecture notes
 - `deid/engine/`: `processing.py` (vendored anonymize/morph/date/pixel engine),
   `anon_profiles.py` (vendored profiles), plus (added over the phases) `objectrules.py`,
-  `pseudonyms.py`, `ocr.py`, `ctpscript.py`.
+  `pseudonyms.py`, `ocr.py`, `ctpscript.py`, `phimatch.py` (match OCR text to a
+  study's own metadata), `scan.py` (header-only folder preview + patient-separation).
 - `deid/`: `paths.py` (portable `De-ID-data`, `DEID_DATA` override), `config.py`
   (local settings), `support.py` (scrub + bug report), `logging_setup.py`,
-  `project.py` (the Project model), `net/` (scu/scp for inbox+export), `gui/`
-  (`app.py` nav-rail shell + `view_*.py`).
-- GUI: a left nav-rail switches focused views (Projects · Rules · Pseudonyms · Run ·
-  Queue · Settings); build panels lazily, keep heavy work off the UI thread.
+  `project.py` (the Project model), `crosswalk.py` (re-id crosswalk CSV),
+  `pixelscan.py` (study-level burned-in-PHI scan + report), `queue.py`,
+  `net/` (scu/scp for inbox+export), `gui/` (`app.py` nav-rail shell + `view_*.py`).
+- GUI: a left nav-rail switches focused views (Pixel PHI Scan · Quick · Projects ·
+  Rules · Run · Pseudonyms · Queue · Settings); build panels lazily, keep heavy
+  work off the UI thread.
 - Packaging is **onedir** by design (faster launch/close, room for a bundled
   Tesseract engine) —
   diverges from the Toolkit's onefile; flip the spec's COLLECT back to a onefile EXE
