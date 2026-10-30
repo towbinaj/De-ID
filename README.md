@@ -22,6 +22,15 @@ version, verifies its checksum, installs it, and restarts. **Your settings and
 pseudonym crosswalk are kept** — they live outside the program folder. If you are
 offline or behind a firewall, the check is skipped silently.
 
+**Upgrading from v0.2.0 or earlier (one time).** Self-update arrived in **v0.3.0**,
+so older installs can't pull it automatically — download **v0.3.0** from the
+Releases page once by hand. From v0.3.0 on, data lives in a per-user folder
+(`%LOCALAPPDATA%\De-ID`) that updates never touch; the first time v0.3.0 runs it
+copies an older `De-ID-data` folder sitting next to the exe over to that location.
+If your old data was elsewhere, use **Settings → Import file…** to bring your
+destinations back in (CSV or JSON). After this one manual step, every later
+version updates itself and keeps your data.
+
 ## Why a separate app
 
 The DICOM Toolkit's "De-identify Files" tab does the job but crams ~20 controls

@@ -82,7 +82,14 @@ The app folder can't be rebuilt while the exe is running — close it first.
 ## Releases (commit-message driven)
 CI (`.github/workflows/release.yml`) cuts a release only when the **commit subject
 line** contains a marker: `[release]` → patch, `[release minor]` → minor,
-`[release major]` → major. The build is zipped as `De-ID-vX.Y.Z.zip` (onedir).
+`[release major]` → major. The build is zipped as `De-ID-vX.Y.Z.zip` (onedir),
+with a sibling `De-ID-vX.Y.Z.zip.sha256`, and the version + bug-report email are
+stamped into the build from the tag/secret at CI time (a local build is not
+stamped). **Self-update shipped in v0.3.0**, the first self-updating build: a
+release can't update to itself, so new `updater.py` download/swap logic is only
+exercised end-to-end once the *next* release exists — verify it against the
+previous release when you change it. Existing v0.2.0 users install v0.3.0 by hand
+once (see README); after that every release self-updates.
 
 ## Commit / PR attribution
 End commit messages with the co-author line and PR descriptions with the
