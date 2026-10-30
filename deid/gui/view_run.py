@@ -221,6 +221,7 @@ class RunView(View):
                 return
         cfg = p.to_receiver_config()
         pseudonymizer = p.build_pseudonymizer(self.app.pseudonyms)
+        self._run_project = p
         files = list(self.files)
         out = str(self.out_dir)
         drop_rules = list(p.drop_rules)
@@ -255,7 +256,25 @@ class RunView(View):
             if res["quarantined"]:
                 self.log.write(f"Quarantined originals set aside in "
                                f"{self._qroot}")
+            self._write_crosswalk(res.get("crosswalk") or [])
         # Refresh the Pseudonyms view (new mappings may have been assigned).
         pv = self.app.views.get("pseudonyms")
         if pv is not None:
             pv.on_project_changed()
+
+    def _write_crosswalk(self, rows: list) -> None:
+        """Auto-save the re-id key to the local crosswalks folder (PHI)."""
+        if not rows:
+            return
+        from .. import crosswalk
+        p = getattr(self, "_run_project", self.app.active_project)
+        path = crosswalk.default_path(p.name)
+        try:
+            crosswalk.write_crosswalk_csv(rows, path)
+        except OSError as exc:
+            self.log.write(f"Could not write crosswalk: {exc}")
+            return
+        # Never log PHI values — only the count and the path.
+        self.log.write(f"Re-ID crosswalk ({len(rows)} study rows) saved — PHI, "
+                       f"keep secure, do NOT share with the output:")
+        self.log.write(f"  {path}")

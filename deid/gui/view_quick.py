@@ -134,6 +134,11 @@ class QuickView(View):
             btnbar, text="Cancel", command=self._cancel, width=80,
             state="disabled", fg_color="#a33", hover_color="#c44")
         self.cancel_btn.pack(side="left", padx=PAD)
+        self.save_cw_btn = ctk.CTkButton(
+            btnbar, text="Save re-id key…", width=140, fg_color="gray40",
+            command=self._save_crosswalk_copy)
+        self.save_cw_btn.pack(side="left")
+        self.save_cw_btn.pack_forget()
 
         self.log = LogBox(runbar, logger_name="quick", height=70)
         self.log.grid(row=2, column=0, sticky="ew", pady=(2, 2))
@@ -383,6 +388,7 @@ class QuickView(View):
 
         cfg = p.to_receiver_config()
         pseudonymizer = p.build_pseudonymizer(self.app.pseudonyms)
+        self._run_project = p
         files = list(self.files)
         out = str(self.out_dir)
         drop_rules = list(p.drop_rules)
@@ -417,6 +423,55 @@ class QuickView(View):
             if res["quarantined"]:
                 self.log.write(f"Quarantined originals set aside in "
                                f"{self._qroot}")
+            self._write_crosswalk(res.get("crosswalk") or [])
         pv = self.app.views.get("pseudonyms")
         if pv is not None:
             pv.on_project_changed()
+
+    def _write_crosswalk(self, rows: list) -> None:
+        """Auto-save the re-id key to the local crosswalks folder (PHI)."""
+        self._cw_rows = rows
+        self.save_cw_btn.pack_forget()
+        if not rows:
+            self._cw_path = None
+            return
+        from .. import crosswalk
+        p = getattr(self, "_run_project", self.app.active_project)
+        path = crosswalk.default_path(p.name)
+        try:
+            crosswalk.write_crosswalk_csv(rows, path)
+        except OSError as exc:
+            self.log.write(f"Could not write crosswalk: {exc}")
+            return
+        self._cw_path = path
+        # Never log PHI values — only the count and the path.
+        self.log.write(f"Re-ID crosswalk ({len(rows)} study rows) saved — PHI, "
+                       f"keep secure, do NOT share with the output:")
+        self.log.write(f"  {path}")
+        self.save_cw_btn.pack(side="left")
+
+    def _save_crosswalk_copy(self) -> None:
+        rows = getattr(self, "_cw_rows", None)
+        if not rows:
+            return
+        if not messagebox.askyesno(
+                "Save re-identification key",
+                "This CSV maps pseudonyms back to real patients — it is PHI.\n\n"
+                "Save it somewhere secure, separate from the de-identified "
+                "output you share. Continue?", parent=self):
+            return
+        from .. import crosswalk
+        p = getattr(self, "_run_project", self.app.active_project)
+        dest = filedialog.asksaveasfilename(
+            title="Save re-id crosswalk (PHI)", defaultextension=".csv",
+            filetypes=[("CSV", "*.csv")],
+            initialfile=crosswalk.default_path(p.name).name)
+        if not dest:
+            return
+        try:
+            crosswalk.write_crosswalk_csv(rows, dest)
+        except OSError as exc:
+            messagebox.showerror("Save crosswalk", f"Could not write: {exc}",
+                                 parent=self)
+            return
+        self.log.write(f"Crosswalk copy saved to {dest}")

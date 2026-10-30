@@ -31,6 +31,10 @@ def _out_name(ds, src: Path) -> str:
     return f"{uid}.dcm" if uid else f"{src.stem}.dcm"
 
 
+def _s(ds, kw: str) -> str:
+    return str(getattr(ds, kw, "") or "").strip()
+
+
 def _quarantine(src: Path, root: Path) -> None:
     root.mkdir(parents=True, exist_ok=True)
     dest = root / src.name
@@ -80,6 +84,9 @@ def deidentify_files(files: list[Path], out_dir: str | Path,
     total = len(files)
     ok = failed = dropped = quarantined = 0
     written: list[str] = []
+    # Re-id crosswalk: one row per study (original -> new), deduped. PHI; the
+    # caller writes it to the local crosswalks folder, never to ``out``.
+    crosswalk: dict[tuple, dict] = {}
 
     for i, f in enumerate(files, 1):
         f = Path(f)
@@ -103,16 +110,35 @@ def deidentify_files(files: list[Path], out_dir: str | Path,
                 on_item(i, total, f, True, "quarantined (original set aside)")
                 continue
 
+            # Capture originals before de-id blanks/remaps them.
+            o_pid, o_name = _s(ds, "PatientID"), _s(ds, "PatientName")
+            o_acc, o_sdate = _s(ds, "AccessionNumber"), _s(ds, "StudyDate")
+            o_suid = _s(ds, "StudyInstanceUID")
+
             proc.process(ds)
             dest = out / _out_name(ds, f)
             ds.save_as(str(dest), enforce_file_format=True)
             written.append(str(dest))
             ok += 1
             on_item(i, total, f, True, "de-identified")
+
+            key = (o_pid, o_suid or o_acc or str(f))
+            if key not in crosswalk:
+                crosswalk[key] = {
+                    "original_patient_id": o_pid,
+                    "new_patient_id": _s(ds, "PatientID"),
+                    "original_accession": o_acc,
+                    "new_accession": _s(ds, "AccessionNumber"),
+                    "original_patient_name": o_name,
+                    "original_study_date": o_sdate,
+                    "original_study_uid": o_suid,
+                    "new_study_uid": _s(ds, "StudyInstanceUID"),
+                }
         except Exception as exc:  # noqa: BLE001 - report, keep going
             failed += 1
             log.warning("De-id failed for %s: %s", f.name, exc)
             on_item(i, total, f, False, str(exc))
 
     return {"ok": ok, "failed": failed, "dropped": dropped,
-            "quarantined": quarantined, "written": written}
+            "quarantined": quarantined, "written": written,
+            "crosswalk": list(crosswalk.values())}

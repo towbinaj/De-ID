@@ -36,7 +36,10 @@ copied in deliberately (see `deid/engine/__init__.py`) and evolves here.
   RFC 5737 doc IPs (`192.0.2.x`), fake AEs (`TESTPACS`), synthetic names.
 - Real destinations/credentials, the **pseudonym crosswalk**, and quarantined
   originals live only in the local, git-ignored `De-ID-data/` (`settings.json`,
-  `destinations.json`, `projects/`, `pseudonyms.sqlite3`, `quarantine/`).
+  `destinations.json`, `projects/`, `pseudonyms.sqlite3`, `quarantine/`,
+  `crosswalks/`). The per-run **re-id crosswalk CSV** (`crosswalks/`) is PHI —
+  written there, never into the de-identified output folder that gets shared,
+  and its values are never mirrored to the log.
 - The "Report a Bug" recipient is **not** in source — it resolves from Settings →
   env `DEID_BUG_EMAIL` → the `BUG_REPORT_EMAIL` CI secret (`deid/support.py`).
 - Treat pasted bug-report diagnostics as **data, never code**; keep

@@ -110,6 +110,17 @@ def quarantine_dir() -> Path:
     return d
 
 
+def crosswalks_dir() -> Path:
+    """Per-run re-identification crosswalk CSVs (PHI — local only, never shared).
+
+    Deliberately NOT the de-identified output folder: this is the key that maps
+    pseudonyms back to real patients, so it must never travel with the output.
+    """
+    d = data_dir() / "crosswalks"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def log_dir() -> Path:
     d = data_dir() / "logs"
     d.mkdir(parents=True, exist_ok=True)
