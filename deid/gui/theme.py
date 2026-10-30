@@ -42,6 +42,7 @@ VIEW_COLORS: dict[str, str] = {
     "rules": "#d4a017",         # gold
     "pseudonyms": "#5aa9c9",    # cyan
     "run": "#5cb85c",           # green
+    "pixelscan": "#c96f5a",     # terracotta (pixel inspection)
     "queue": "#7fa650",         # olive
     "settings": "#8a8f94",      # gray
 }

@@ -26,6 +26,11 @@ copied in deliberately (see `deid/engine/__init__.py`) and evolves here.
   de-identifies against the active project and forwards to a research PACS/VNA.
 - **OCR burned-in text**: Tesseract-based redaction of burned-in PHI, run as a
   subprocess (optional; `scripts/fetch_tesseract.py` stages a bundled copy).
+  Two modes: redact *all* detected text, or **PHI-only** — OCR text is matched
+  against the study's own metadata (`engine/phimatch.py`) so scan parameters are
+  kept. A read-only **Pixel PHI Scan** (`pixelscan.py`, Pixel PHI Scan view)
+  QA-scans a folder and reports matches + pattern "suspects"; its report lists
+  burned-in text (PHI) → local `pixelscan/` folder only, never logged.
 - **CTP anonymizer-script** import/export for RSNA/CTP interoperability.
 
 ## Security & privacy — non-negotiable

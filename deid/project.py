@@ -65,6 +65,7 @@ class Project:
     ocr_enabled: bool = False
     ocr_min_confidence: float = 0.5
     ocr_modalities: list = field(default_factory=list)   # [] = all modalities
+    ocr_mode: str = "all"                                # all | phi (match meta)
 
     # -- Object / series drop rules (wired up in the drop-rules phase) ---
     drop_rules: list = field(default_factory=list)       # list[dict]
@@ -152,6 +153,7 @@ class Project:
             ocr_enabled=self.ocr_enabled,
             ocr_min_confidence=float(self.ocr_min_confidence or 0.5),
             ocr_modalities=list(self.ocr_modalities),
+            ocr_mode=self.ocr_mode or "all",
         )
         if self.morph_enabled and self.morph_key_tag and self.morph_target_tags:
             fmt = "|".join([self.morph_key_tag] + list(self.morph_target_tags))

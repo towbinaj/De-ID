@@ -21,6 +21,7 @@ from __future__ import annotations
 import csv
 import io
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -94,18 +95,22 @@ def _run_tsv(exe: str, png_path: str) -> str:
     return proc.stdout
 
 
-def _detect_boxes(frame: np.ndarray, min_conf: float) -> list:
-    """Return [(y0, y1, x0, x1), ...] word boxes above the confidence floor."""
+def _ocr_words(frame: np.ndarray, min_conf: float) -> list[dict]:
+    """OCR one frame → word dicts: {text, conf, box:(y0,y1,x0,x1), line}.
+
+    ``line`` is a (block, paragraph, line) key so the caller can regroup words
+    into lines for multi-word (name / spelled-date) matching.
+    """
     exe = tesseract_path()
     if not exe:
         return []
     from PIL import Image
     img = Image.fromarray(_to_uint8(frame))
-    boxes = []
     with tempfile.TemporaryDirectory() as td:
         png = os.path.join(td, "frame.png")
         img.save(png)
         tsv = _run_tsv(exe, png)
+    words: list[dict] = []
     for row in csv.DictReader(io.StringIO(tsv), delimiter="\t"):
         try:
             text = (row.get("text") or "").strip()
@@ -114,29 +119,153 @@ def _detect_boxes(frame: np.ndarray, min_conf: float) -> list:
                 continue
             left, top = int(row["left"]), int(row["top"])
             w, h = int(row["width"]), int(row["height"])
-            boxes.append((top, top + h, left, left + w))
+            words.append({
+                "text": text, "conf": conf,
+                "box": (top, top + h, left, left + w),
+                "line": (row.get("block_num"), row.get("par_num"),
+                         row.get("line_num")),
+            })
         except (ValueError, KeyError, TypeError):
             continue
-    return boxes
+    return words
 
 
-def redact_burned_in_text(ds, *, min_confidence: float = 0.5,
-                          modalities=None) -> int:
+def _detect_boxes(frame: np.ndarray, min_conf: float) -> list:
+    """Return [(y0, y1, x0, x1), ...] word boxes above the confidence floor."""
+    return [w["box"] for w in _ocr_words(frame, min_conf)]
+
+
+def classify_words(words: list[dict], phi) -> list[dict]:
+    """Tag each OCR word against a :class:`phimatch.PhiSet`.
+
+    Adds ``category`` to each word: 'name' / 'id' / 'date' when it matches this
+    study's metadata, 'suspect' when it looks like PHI by pattern but isn't in
+    the metadata (a review flag, not an auto-redact), or '' otherwise. Returns
+    only the words that got a non-empty category.
+    """
+    from . import phimatch
+    cats: dict[int, str] = {}
+    # Per-word metadata matches.
+    for i, w in enumerate(words):
+        c = phimatch.match_token(w["text"], phi)
+        if c:
+            cats[i] = c
+    # Multi-word spelled dates, matched per line then mapped back to word boxes.
+    by_line: dict = {}
+    for i, w in enumerate(words):
+        by_line.setdefault(w["line"], []).append(i)
+    for idxs in by_line.values():
+        idxs.sort(key=lambda j: words[j]["box"][2])     # left-to-right
+        toks = [words[j]["text"] for j in idxs]
+        for (s, e) in phimatch.match_phrases(toks, phi):
+            for j in idxs[s:e]:
+                cats.setdefault(j, "date")
+    # Pattern-based suspects for anything still unmatched.
+    for i, w in enumerate(words):
+        if i not in cats and _is_suspect(w["text"]):
+            cats[i] = "suspect"
+    out = []
+    for i, c in cats.items():
+        w = dict(words[i])
+        w["category"] = c
+        out.append(w)
+    return out
+
+
+# Common imaging / overlay terms that look alarming but are not PHI. Keeps the
+# "suspect" pass from flagging legitimate acquisition text.
+_SCAN_TERMS = {
+    "KV", "KVP", "MA", "MAS", "MM", "CM", "SEC", "FPS", "HZ", "FOV", "WL", "WW",
+    "TR", "TE", "TI", "ETL", "NEX", "SLICE", "THK", "GANTRY", "TILT", "ZOOM",
+    "MAG", "AP", "PA", "LAT", "SUP", "INF", "ANT", "POST", "LEFT", "RIGHT",
+    "SAG", "COR", "AX", "AXIAL", "PRONE", "SUPINE", "STD", "SOFT", "BONE",
+    "HU", "BPM", "CINE", "DOSE", "CTDI", "DLP", "SE", "IM", "SL",
+}
+
+_DATE_RE = re.compile(r"^\d{1,4}[/.\-]\d{1,2}([/.\-]\d{1,4})?$")
+_NAME_RE = re.compile(r"^[A-Z][a-z]{2,}$")      # a single Capitalised word
+
+
+def _is_suspect(text: str) -> bool:
+    t = text.strip()
+    up = re.sub(r"[^A-Z0-9]", "", t.upper())
+    if not up or up in _SCAN_TERMS:
+        return False
+    if _DATE_RE.match(t):                       # date-like with separators
+        return True
+    if up.isdigit() and len(up) >= 6:           # long bare number (MRN/acc-like)
+        return True
+    if _NAME_RE.match(t) and up not in _SCAN_TERMS:   # a name-like word
+        return True
+    return False
+
+
+def _modality_ok(ds, modalities) -> bool:
+    if not modalities:
+        return True
+    mod = str(getattr(ds, "Modality", "")).upper()
+    return mod in [m.upper() for m in modalities]
+
+
+def _warn_unavailable() -> None:
+    global _warned_missing
+    if not _warned_missing:
+        log.warning("OCR requested but no tesseract executable was found; "
+                    "skipping burned-in text handling.")
+        _warned_missing = True
+
+
+def _representative_frame(arr):
+    """(frame, is_single) — a 2D/RGB frame to OCR (first frame of a stack)."""
+    single = arr.ndim == 2 or (arr.ndim == 3 and arr.shape[2] in (3, 4))
+    return (arr if single else arr[0]), single
+
+
+def scan_dataset(ds, phi=None, *, min_confidence: float = 0.5,
+                 modalities=None) -> list[dict]:
+    """Find burned-in text in ``ds`` and classify it WITHOUT modifying pixels.
+
+    Returns a list of findings ``{text, category, conf, box}`` where category is
+    'name'/'id'/'date' (matched this study's metadata) or 'suspect' (looks like
+    PHI by pattern). ``phi`` is a :class:`phimatch.PhiSet`; when omitted it is
+    built from ``ds`` (callers that have the ORIGINAL dataset should pass it, as
+    de-identified metadata no longer contains the values to match).
+    """
+    if not _modality_ok(ds, modalities) or not available():
+        if not available():
+            _warn_unavailable()
+        return []
+    if phi is None:
+        from . import phimatch
+        phi = phimatch.build_phi(ds)
+    try:
+        arr = ds.pixel_array
+    except Exception as exc:  # noqa: BLE001
+        log.warning("OCR scan skipped (cannot read pixels): %s", exc)
+        return []
+    rep, _ = _representative_frame(arr)
+    try:
+        words = _ocr_words(rep, min_confidence)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("OCR scan failed: %s", exc)
+        return []
+    return classify_words(words, phi)
+
+
+def redact_burned_in_text(ds, *, min_confidence: float = 0.5, modalities=None,
+                          mode: str = "all", phi=None) -> int:
     """Black out burned-in text in ``ds`` in place. Returns boxes redacted.
 
-    No-op (returns 0) when OCR is unavailable, the modality is filtered out, or
-    the pixels can't be read/written - never raises on those paths.
+    ``mode`` = 'all' blanks every detected text region (highest recall);
+    'phi' blanks only regions whose text matches this study's metadata PHI
+    (precise — keeps scan parameters), using ``phi`` (a ``phimatch.PhiSet``;
+    built from ``ds`` if not supplied). No-op (returns 0) when OCR is
+    unavailable, the modality is filtered out, or pixels can't be read/written.
     """
-    global _warned_missing
-    if modalities:
-        mod = str(getattr(ds, "Modality", "")).upper()
-        if mod not in [m.upper() for m in modalities]:
-            return 0
+    if not _modality_ok(ds, modalities):
+        return 0
     if not available():
-        if not _warned_missing:
-            log.warning("OCR requested but no tesseract executable was found; "
-                        "skipping burned-in text redaction.")
-            _warned_missing = True
+        _warn_unavailable()
         return 0
     try:
         ts = ds.file_meta.TransferSyntaxUID
@@ -145,10 +274,16 @@ def redact_burned_in_text(ds, *, min_confidence: float = 0.5,
         log.warning("OCR skipped (cannot read pixels): %s", exc)
         return 0
 
-    single = arr.ndim == 2 or (arr.ndim == 3 and arr.shape[2] in (3, 4))
-    rep = arr if single else arr[0]
+    rep, single = _representative_frame(arr)
     try:
-        boxes = _detect_boxes(rep, min_confidence)
+        if mode == "phi":
+            if phi is None:
+                from . import phimatch
+                phi = phimatch.build_phi(ds)
+            hits = classify_words(_ocr_words(rep, min_confidence), phi)
+            boxes = [h["box"] for h in hits if h["category"] != "suspect"]
+        else:
+            boxes = _detect_boxes(rep, min_confidence)
     except Exception as exc:  # noqa: BLE001
         log.warning("OCR detection failed: %s", exc)
         return 0
@@ -171,5 +306,6 @@ def redact_burned_in_text(ds, *, min_confidence: float = 0.5,
     except Exception as exc:  # noqa: BLE001
         log.warning("OCR write-back failed: %s", exc)
         return 0
-    log.info("OCR redacted %d burned-in text region(s).", len(boxes))
+    log.info("OCR redacted %d burned-in text region(s) [mode=%s].",
+             len(boxes), mode)
     return len(boxes)

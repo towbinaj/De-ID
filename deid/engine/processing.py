@@ -90,10 +90,13 @@ class ReceiverConfig:
     pseudonymize: bool = False
     pseudonym_tags: list = field(default_factory=list)   # keywords or 8-hex
     pseudonym_mode: str = "sequential"                   # sequential | hash
-    # [OCR] burned-in pixel-text redaction (optional; needs rapidocr-onnxruntime).
+    # [OCR] burned-in pixel-text redaction (optional; needs a tesseract binary).
     ocr_enabled: bool = False
     ocr_min_confidence: float = 0.5
     ocr_modalities: list = field(default_factory=list)   # [] = all modalities
+    # 'all' blanks every text region; 'phi' blanks only text that matches this
+    # study's own metadata (keeps scan parameters). See engine/phimatch.py.
+    ocr_mode: str = "all"
 
 
 def _parse_tag(s: str) -> Tag:
@@ -244,6 +247,12 @@ class Processor:
         pseudo_plan = (self._compute_pseudonym_plan(ds)
                        if (self.cfg.pseudonymize and self._pseudonymizer
                            and self._pseudo_tags) else None)
+        # Capture burned-in PHI values from the ORIGINAL metadata, before the
+        # Basic Profile blanks them, so PHI-mode OCR can match against them.
+        ocr_phi = None
+        if self.cfg.ocr_enabled and self.cfg.ocr_mode == "phi":
+            from . import phimatch
+            ocr_phi = phimatch.build_phi(ds)
         if self.cfg.basic_profile:
             self._apply_basic_profile(ds)
         if self.cfg.morph_tags:
@@ -264,16 +273,17 @@ class Processor:
             self._apply_pseudonym_plan(ds, pseudo_plan)
         self._apply_pixel_blanking(ds)
         if self.cfg.ocr_enabled:
-            self._apply_ocr(ds)
+            self._apply_ocr(ds, ocr_phi)
         return ds
 
-    def _apply_ocr(self, ds: Dataset) -> None:
+    def _apply_ocr(self, ds: Dataset, phi=None) -> None:
         """Redact burned-in pixel text (optional; no-op if OCR unavailable)."""
         from . import ocr
         try:
             ocr.redact_burned_in_text(
                 ds, min_confidence=self.cfg.ocr_min_confidence,
-                modalities=self.cfg.ocr_modalities)
+                modalities=self.cfg.ocr_modalities,
+                mode=self.cfg.ocr_mode or "all", phi=phi)
         except Exception as exc:  # noqa: BLE001
             log.warning("OCR redaction skipped: %s", exc)
 

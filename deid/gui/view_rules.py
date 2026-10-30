@@ -25,6 +25,14 @@ def _fmt_tag(hex8: str) -> str:
     return f"{h[:4]},{h[4:8]}" if len(h) >= 8 else hex8
 
 
+# OCR redaction-mode dropdown labels <-> stored values.
+_OCR_MODE_LABELS = {
+    "Redact all detected text": "all",
+    "Redact only PHI (match metadata)": "phi",
+}
+_OCR_MODE_FOR = {v: k for k, v in _OCR_MODE_LABELS.items()}
+
+
 class _RuleRow:
     def __init__(self, master, rule: ap.AnonRule, on_delete):
         self.frame = ctk.CTkFrame(master, fg_color="transparent")
@@ -230,16 +238,21 @@ class RulesView(View):
         self.ocr_enable = ctk.CTkCheckBox(
             f, text="Redact burned-in pixel text with OCR")
         place(self.ocr_enable, span_full=True)
+        self.ocr_mode = place(
+            ctk.CTkOptionMenu(f, width=300, values=list(_OCR_MODE_LABELS)),
+            "Redact mode")
         self.ocr_conf = place(ctk.CTkEntry(f, width=80),
                               "Min confidence (0-1)")
         self.ocr_mod = place(ctk.CTkEntry(f), "  …limit to modalities")
         from ..engine import ocr as _ocr
         _ok = _ocr.available()
         ctk.CTkLabel(
-            f, text=("OCR engine available." if _ok else
-                     "OCR engine NOT installed — this option is skipped at run "
-                     "time. Install the 'rapidocr-onnxruntime' extra to enable it."),
-            anchor="w", justify="left",
+            f, text=("OCR engine available. “PHI matches only” compares OCR'd "
+                     "text to this study's own name / ID / accession / dates, so "
+                     "scan parameters are kept." if _ok else
+                     "OCR engine NOT found — this option is skipped at run time. "
+                     "The bundled Tesseract ships with the built exe."),
+            anchor="w", justify="left", wraplength=560,
             text_color=(("#2e8b57", "#43c59e") if _ok else "#d9a441"),
             font=ctk.CTkFont(size=11)).grid(
             row=r, column=0, columnspan=2, sticky="w", padx=PAD)
@@ -373,6 +386,8 @@ class RulesView(View):
         self._set_entry(self.img_left_mod,
                         ",".join(p.remove_image_left_modality))
         self._set_check(self.ocr_enable, p.ocr_enabled)
+        self.ocr_mode.set(_OCR_MODE_FOR.get(p.ocr_mode or "all",
+                                            _OCR_MODE_FOR["all"]))
         self._set_entry(self.ocr_conf, p.ocr_min_confidence)
         self._set_entry(self.ocr_mod, ",".join(p.ocr_modalities))
         self._set_check(self.pseudo_enable, p.pseudonymize)
@@ -473,6 +488,7 @@ class RulesView(View):
         rules = [r.to_rule() for r in self._rows]
         p.rules = [r for r in rules if r is not None]
         p.ocr_enabled = bool(self.ocr_enable.get())
+        p.ocr_mode = _OCR_MODE_LABELS.get(self.ocr_mode.get(), "all")
         try:
             p.ocr_min_confidence = max(0.0, min(1.0,
                                        float(self.ocr_conf.get() or "0.5")))

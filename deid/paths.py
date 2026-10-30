@@ -127,6 +127,17 @@ def log_dir() -> Path:
     return d
 
 
+def pixelscan_dir() -> Path:
+    """Reports from the burned-in-PHI pixel scan (PHI — local only, never shared).
+
+    The report lists the actual burned-in text found, so it is PHI and stays in
+    the local, git-ignored data folder like the re-id crosswalks.
+    """
+    d = data_dir() / "pixelscan"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def reports_dir() -> Path:
     """Folder for per-run processing reports (folder status, failures)."""
     d = data_dir() / "reports"
