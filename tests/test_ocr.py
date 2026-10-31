@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from deid.engine import ocr
 from deid.engine.processing import Processor
 from deid.project import Project
@@ -33,10 +35,27 @@ def test_tsv_parsing_filters_by_confidence(monkeypatch):
     import numpy as np
     monkeypatch.setattr(ocr, "tesseract_path", lambda: "tesseract")
     monkeypatch.setattr(ocr, "_run_tsv", lambda exe, png: _TSV)
+    monkeypatch.setattr(ocr, "_ocr_scale", lambda w, h: 1.0)   # isolate parsing
     boxes = ocr._detect_boxes(np.zeros((64, 128), dtype="uint8"),
                               min_conf=0.5)
     # Only the 95.5-conf word survives; the 9.0 one is below 50%.
     assert boxes == [(20, 50, 10, 110)]
+
+
+def test_box_mapping_scales_back_to_original(monkeypatch):
+    import numpy as np
+    monkeypatch.setattr(ocr, "tesseract_path", lambda: "tesseract")
+    monkeypatch.setattr(ocr, "_run_tsv", lambda exe, png: _TSV)
+    monkeypatch.setattr(ocr, "_ocr_scale", lambda w, h: 2.0)   # pretend 2x upscale
+    boxes = ocr._detect_boxes(np.zeros((64, 128), dtype="uint8"), min_conf=0.5)
+    # (left,top,w,h)=(10,20,100,30) at 2x -> x0=5,y0=10,x1=ceil(110/2)=55,y1=25.
+    assert boxes == [(10, 25, 5, 55)]
+
+
+def test_small_image_is_upscaled():
+    assert ocr._ocr_scale(64, 64) == ocr._OCR_MAX_SCALE   # tiny -> capped scale
+    assert ocr._ocr_scale(4000, 3000) == 1.0              # large -> no upscale
+    assert ocr._ocr_scale(800, 600) > 1.0                 # modest US frame -> up
 
 
 def test_modality_filter_skips():
@@ -73,6 +92,31 @@ def test_processor_invokes_ocr_when_enabled(monkeypatch):
                   ocr_min_confidence=0.4).to_receiver_config()
     Processor(cfg).process(make_ct())
     assert calls["n"] == 1
+
+
+@pytest.mark.skipif(not ocr.available(), reason="no tesseract engine")
+def test_upscaling_catches_small_text_and_boxes_are_exact():
+    import numpy as np
+    from PIL import Image, ImageDraw, ImageFont
+    try:
+        fnt = ImageFont.truetype("arial.ttf", 16)
+    except Exception:  # noqa: BLE001
+        fnt = ImageFont.load_default()
+    img = Image.new("L", (640, 480), 0)
+    ImageDraw.Draw(img).text((12, 12), "SMITH^JOHN MRN 1234567",
+                             fill=255, font=fnt)
+    arr = np.array(img)
+    words = ocr._ocr_words(arr, 0.4)
+    texts = " ".join(w["text"] for w in words).upper()
+    assert "SMITH" in texts            # small name caught (missed at native res)
+    for w in words:                    # every box stays within the ORIGINAL frame
+        y0, y1, x0, x1 = w["box"]
+        assert 0 <= y0 <= y1 <= 480 and 0 <= x0 <= x1 <= 640
+    name = next(w for w in words if "SMITH" in w["text"].upper())
+    out = arr.copy()
+    ocr._blank_boxes(out, [name["box"]], True)
+    y0, y1, x0, x1 = name["box"]
+    assert out[y0:y1 + 1, x0:x1 + 1].max() == 0   # text region exactly blanked
 
 
 def test_processor_skips_ocr_when_disabled(monkeypatch):

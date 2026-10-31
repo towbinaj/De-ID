@@ -95,9 +95,28 @@ def _run_tsv(exe: str, png_path: str) -> str:
     return proc.stdout
 
 
+# Burned-in text (ultrasound annotations, face sheets, scanned forms) is often
+# small relative to the image. Tesseract's recall drops sharply on small text, so
+# small images are upscaled before OCR until the shorter side reaches this target
+# (capped) - this is what lets it catch the patient name on a US face sheet and
+# dense lines on a printed document that native resolution misses. Boxes are
+# mapped back to the original pixel coordinates afterwards so redaction is exact.
+_OCR_TARGET_MIN = 1600
+_OCR_MAX_SCALE = 4.0
+
+
+def _ocr_scale(width: int, height: int) -> float:
+    small = min(width, height)
+    if small <= 0:
+        return 1.0
+    return max(1.0, min(_OCR_TARGET_MIN / small, _OCR_MAX_SCALE))
+
+
 def _ocr_words(frame: np.ndarray, min_conf: float) -> list[dict]:
     """OCR one frame → word dicts: {text, conf, box:(y0,y1,x0,x1), line}.
 
+    The frame is converted to grayscale and upscaled (small text is otherwise
+    missed); detected boxes are scaled back to the frame's own coordinates.
     ``line`` is a (block, paragraph, line) key so the caller can regroup words
     into lines for multi-word (name / spelled-date) matching.
     """
@@ -106,6 +125,12 @@ def _ocr_words(frame: np.ndarray, min_conf: float) -> list[dict]:
         return []
     from PIL import Image
     img = Image.fromarray(_to_uint8(frame))
+    if img.mode != "L":                  # text detection is more robust in gray
+        img = img.convert("L")
+    scale = _ocr_scale(img.width, img.height)
+    if scale > 1.0:
+        img = img.resize((round(img.width * scale), round(img.height * scale)),
+                         Image.LANCZOS)
     with tempfile.TemporaryDirectory() as td:
         png = os.path.join(td, "frame.png")
         img.save(png)
@@ -119,9 +144,15 @@ def _ocr_words(frame: np.ndarray, min_conf: float) -> list[dict]:
                 continue
             left, top = int(row["left"]), int(row["top"])
             w, h = int(row["width"]), int(row["height"])
+            if scale > 1.0:              # map back to original pixel coordinates
+                x0, y0 = int(left / scale), int(top / scale)
+                x1 = int(np.ceil((left + w) / scale))
+                y1 = int(np.ceil((top + h) / scale))
+            else:
+                x0, y0, x1, y1 = left, top, left + w, top + h
             words.append({
                 "text": text, "conf": conf,
-                "box": (top, top + h, left, left + w),
+                "box": (y0, y1, x0, x1),
                 "line": (row.get("block_num"), row.get("par_num"),
                          row.get("line_num")),
             })
