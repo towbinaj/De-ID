@@ -54,7 +54,7 @@ class PixelScanView(View):
         except Exception:  # noqa: BLE001
             self._ohif_ok = False
 
-        self.body.grid_rowconfigure(5, weight=1)
+        self.body.grid_rowconfigure(6, weight=1)
         self.body.grid_columnconfigure(0, weight=1)
 
         section(self.body, "1.  Choose files or a folder").grid(
@@ -96,26 +96,32 @@ class PixelScanView(View):
             barrow, text="Cancel", width=80, state="disabled", fg_color="#a33",
             hover_color="#c44", command=self._do_cancel)
         self.cancel_btn.pack(side="left", padx=PAD)
-        self.save_btn = ctk.CTkButton(barrow, text="Save report…", width=120,
+        self.summary = ctk.CTkLabel(barrow, text="", anchor="w", wraplength=420,
+                                    justify="left")
+        self.summary.pack(side="left", padx=PAD)
+
+        # Review actions get their own row so the Clean / Save buttons and the
+        # adjudication counter stay visible at normal window widths (packed into
+        # the scan row they were pushed off-screen until the window was maximized).
+        review_bar = ctk.CTkFrame(self.body, fg_color="transparent")
+        review_bar.grid(row=5, column=0, sticky="ew", padx=PAD, pady=(0, 2))
+        self.adj_lbl = ctk.CTkLabel(review_bar, text="", anchor="w",
+                                    text_color=MUTED,
+                                    font=ctk.CTkFont(size=12))
+        self.adj_lbl.pack(side="left")
+        self.save_btn = ctk.CTkButton(review_bar, text="Save report…", width=120,
                                       fg_color="gray40",
                                       command=self._save_report)
         self.save_btn.pack(side="right")
         self.save_btn.pack_forget()
         # Shown by _update_clean_btn once there are confirmed-PHI items.
         self.clean_btn = ctk.CTkButton(
-            barrow, text="Clean confirmed PHI", width=180,
+            review_bar, text="Clean confirmed PHI", width=180,
             fg_color="#b5651d", hover_color="#c8761f",
             command=self._clean_confirmed)
-        self.adj_lbl = ctk.CTkLabel(barrow, text="", anchor="e",
-                                    text_color=MUTED,
-                                    font=ctk.CTkFont(size=12))
-        self.adj_lbl.pack(side="right", padx=PAD)
-        self.summary = ctk.CTkLabel(barrow, text="", anchor="w", wraplength=520,
-                                    justify="left")
-        self.summary.pack(side="left", padx=PAD)
 
         self.results = ctk.CTkScrollableFrame(self.body, label_text="Studies")
-        self.results.grid(row=5, column=0, sticky="nsew", padx=PAD,
+        self.results.grid(row=6, column=0, sticky="nsew", padx=PAD,
                           pady=(0, PAD))
         self.results.grid_columnconfigure(0, weight=1)
         self._update_count()
