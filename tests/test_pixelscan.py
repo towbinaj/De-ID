@@ -3,13 +3,43 @@
 from __future__ import annotations
 
 import csv
+from pathlib import Path
 
+import numpy as np
 import pytest
+from pydicom import dcmread
+from pydicom.dataset import Dataset, FileMetaDataset
+from pydicom.uid import generate_uid, ExplicitVRLittleEndian, CTImageStorage
 
 from deid import pixelscan
 from deid.pixelscan import InstanceReport, instance_status, build_studies
 from deid.engine import ocr
 from conftest import make_ct, save
+
+
+def _solid_ct(path, study, series, sop, value=1000, rows=16, cols=16):
+    """A small CT whose pixels are all ``value`` (so a blanked box is visible)."""
+    ds = Dataset()
+    ds.PatientID = "P1"
+    ds.StudyInstanceUID = study
+    ds.SeriesInstanceUID = series
+    ds.SOPInstanceUID = sop
+    ds.SOPClassUID = CTImageStorage
+    ds.Modality = "CT"
+    ds.Rows, ds.Columns = rows, cols
+    ds.BitsAllocated = ds.BitsStored = 16
+    ds.HighBit = 15
+    ds.PixelRepresentation = 0
+    ds.SamplesPerPixel = 1
+    ds.PhotometricInterpretation = "MONOCHROME2"
+    ds.PixelData = np.full((rows, cols), value, dtype=np.uint16).tobytes()
+    fm = FileMetaDataset()
+    fm.MediaStorageSOPClassUID = ds.SOPClassUID
+    fm.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
+    fm.TransferSyntaxUID = ExplicitVRLittleEndian
+    ds.file_meta = fm
+    ds.save_as(str(path), enforce_file_format=True)
+    return str(path)
 
 
 def _inst(study, series, cat_counts, redacted=0, **kw):
@@ -108,6 +138,55 @@ def test_findings_csv_adjudication_blank_by_default(tmp_path):
     with open(path, newline="", encoding="utf-8") as fh:
         rows = list(csv.reader(fh))
     assert rows[1][-1] == ""          # no decision -> empty adjudicated cell
+
+
+def test_ocr_redact_boxes_blanks_region(tmp_path):
+    src = _solid_ct(tmp_path / "r.dcm", "S", "E", "X", value=500)
+    ds = dcmread(src)
+    assert ocr.redact_boxes(ds, [(1, 3, 1, 3)]) == 1
+    arr = ds.pixel_array
+    assert (arr[1:4, 1:4] == 0).all()     # box (y0:y1+1, x0:x1+1) blanked
+    assert arr[0, 0] == 500               # outside the box untouched
+    assert ocr.redact_boxes(ds, []) == 0  # nothing to do
+
+
+def test_redact_adjudicated_cleans_confirmed_phi(tmp_path):
+    study, series, sop = "ST1", "SE1", "SOP1"
+    src = _solid_ct(tmp_path / "in.dcm", study, series, sop, value=1000)
+    inst = InstanceReport(
+        path=src, sop=sop, study_uid=study, series_uid=series,
+        series_number="1", series_desc="", modality="CT",
+        findings=[{"category": "suspect", "text": "SUSPECT", "conf": 90,
+                   "box": (2, 5, 3, 6)}], redacted=0)
+    studies = build_studies([inst])
+    adj = {pixelscan.adjudication_key(study, series, "suspect", "SUSPECT"): "phi"}
+    out = tmp_path / "out"
+    summary = pixelscan.redact_adjudicated(studies, adj, out, Path(src).parent)
+    assert summary["instances"] == 1 and summary["boxes"] == 1
+    assert inst.out_path and Path(inst.out_path).exists()
+    assert inst.redacted == 1
+    assert any(f.get("cleaned") for f in inst.findings)   # tagged handled
+    arr = dcmread(inst.out_path).pixel_array
+    assert (arr[2:6, 3:7] == 0).all()     # confirmed box blanked in the output
+    assert arr[0, 0] == 1000              # rest of the image preserved
+
+
+def test_redact_adjudicated_only_touches_phi(tmp_path):
+    study, series, sop = "ST2", "SE2", "SOP2"
+    src = _solid_ct(tmp_path / "in2.dcm", study, series, sop, value=800)
+    inst = InstanceReport(
+        path=src, sop=sop, study_uid=study, series_uid=series,
+        series_number="1", series_desc="", modality="CT",
+        findings=[{"category": "suspect", "text": "KEEP", "conf": 90,
+                   "box": (2, 5, 3, 6)}], redacted=0)
+    studies = build_studies([inst])
+    # Marked OK, not PHI -> must not be cleaned.
+    adj = {pixelscan.adjudication_key(study, series, "suspect", "KEEP"): "ok"}
+    summary = pixelscan.redact_adjudicated(studies, adj, tmp_path / "out2",
+                                           Path(src).parent)
+    assert summary == {"instances": 0, "boxes": 0, "failed": 0}
+    assert not inst.out_path
+    assert not any(f.get("cleaned") for f in inst.findings)
 
 
 @pytest.mark.skipif(not ocr.available(), reason="no tesseract engine")

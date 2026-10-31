@@ -101,6 +101,11 @@ class PixelScanView(View):
                                       command=self._save_report)
         self.save_btn.pack(side="right")
         self.save_btn.pack_forget()
+        # Shown by _update_clean_btn once there are confirmed-PHI items.
+        self.clean_btn = ctk.CTkButton(
+            barrow, text="Clean confirmed PHI", width=180,
+            fg_color="#b5651d", hover_color="#c8761f",
+            command=self._clean_confirmed)
         self.adj_lbl = ctk.CTkLabel(barrow, text="", anchor="e",
                                     text_color=MUTED,
                                     font=ctk.CTkFont(size=12))
@@ -282,6 +287,9 @@ class PixelScanView(View):
 
     def _render_study(self, st) -> int:
         color = _STATUS_COLOR.get(st.status, MUTED)
+        # A divider before each study so the long list breaks into clear blocks.
+        ctk.CTkFrame(self.results, height=2, fg_color=("gray80", "gray30")).grid(
+            sticky="ew", padx=4, pady=(14, 4))
         label = (f"[{st.status.upper()}]  Acc {st.accession or '—'}  ·  "
                  f"{st.modalities or '?'}  ·  {st.n_series} series, "
                  f"{st.n_instances} img  ·  {st.n_phi} PHI / {st.n_suspects} "
@@ -290,8 +298,8 @@ class PixelScanView(View):
         ctk.CTkLabel(self.results, text=label, anchor="w", justify="left",
                      text_color=color, wraplength=820,
                      font=ctk.CTkFont(size=13, weight="bold")).grid(
-            sticky="ew", padx=4, pady=(10, 0))
-        rows = 1
+            sticky="ew", padx=4, pady=(0, 2))
+        rows = 2
         # Keep the actionable (suspect) findings visually apart from the ones
         # already matched/handled, so handled items don't read as "to review".
         review_series, handled_series = [], []
@@ -304,7 +312,8 @@ class PixelScanView(View):
             if matched:
                 handled_series.append((se, matched))
         rows += self._render_group(
-            st, "Needs review", _STATUS_COLOR[pixelscan.STATUS_REVIEW],
+            st, "Needs review  —  click OK (not PHI) or PHI (confirmed) on "
+            "each item below", _STATUS_COLOR[pixelscan.STATUS_REVIEW],
             review_series, review=True)
         rows += self._render_group(
             st, "Already matched — handled",
@@ -324,16 +333,30 @@ class PixelScanView(View):
                 if key in seen:
                     continue
                 seen.add(key)
-                (suspects if f["category"] == "suspect"
-                 else matched).append(f)
+                # A suspect the user cleaned (redacted) moves to the handled side.
+                is_review = f["category"] == "suspect" and not f.get("cleaned")
+                (suspects if is_review else matched).append(f)
         return suspects, matched
+
+    def _viewer_files(self) -> list:
+        """Files to show in the viewer: the corrected/output copy of each
+        instance where one was written, else the original. This way review
+        shows what the shared output looks like, not the input with PHI."""
+        files = []
+        for st in self._studies:
+            for se in st.series:
+                for inst in se.instances:
+                    p = inst.out_path or inst.path
+                    if p:
+                        files.append(Path(p))
+        return files
 
     def _view_in_ohif(self, study_uid, series_uid="") -> None:
         """Open (or re-point) the persistent OHIF window on this study/series."""
         from .. import ohif
         try:
             if not self._viewer_started:
-                shell, _m = ohif.prepare_unified(self.files)
+                shell, _m = ohif.prepare_unified(self._viewer_files())
                 ohif.open_window(shell)
                 self._viewer_started = True
             ohif.goto(study_uid, series_uid)
@@ -371,7 +394,9 @@ class PixelScanView(View):
                               padx=(8, 0))
             rows += 1
             for f in findings:
-                text = (f"         [{_CAT_LABEL.get(f['category'])}] "
+                cat_label = ("redacted" if f.get("cleaned")
+                             else _CAT_LABEL.get(f["category"]))
+                text = (f"         [{cat_label}] "
                         f"“{f['text']}” ({f['conf']:.0f}%)")
                 if review:
                     self._render_review_row(st, se, f, text)
@@ -391,24 +416,27 @@ class PixelScanView(View):
         akey = pixelscan.adjudication_key(
             st.study_uid, se.series_uid, "suspect", finding["text"])
         decision = self._adjudications.get(akey)
-        row = ctk.CTkFrame(self.results, fg_color="transparent")
-        row.grid(sticky="ew", padx=4)
+        # Each adjudicatable item is its own card, so it stands out from the
+        # header/handled lines and is easy to find in a long list.
+        row = ctk.CTkFrame(self.results, fg_color=("gray92", "gray17"),
+                           corner_radius=6)
+        row.grid(sticky="ew", padx=10, pady=3)
         row.grid_columnconfigure(0, weight=1)
-        lbl = ctk.CTkLabel(row, anchor="w", justify="left", text=text,
-                           wraplength=520,
+        lbl = ctk.CTkLabel(row, anchor="w", justify="left", text=text.strip(),
+                           wraplength=480,
                            text_color=self._adj_color(decision))
-        lbl.grid(row=0, column=0, sticky="ew")
+        lbl.grid(row=0, column=0, sticky="ew", padx=(12, 4), pady=7)
         col = 1
         if self._ohif_ok:
             self._view_button(row, st, se, row=0, column=col, sticky="e",
-                              padx=(8, 0))
+                              padx=4, pady=7)
             col += 1
         seg = ctk.CTkSegmentedButton(
-            row, values=["—", "OK", "PHI"], width=140, height=26,
+            row, values=["—", "OK", "PHI"], width=140, height=28,
             font=ctk.CTkFont(size=11),
             command=lambda v, k=akey, w=lbl: self._set_adjudication(k, v, w))
         seg.set({"ok": "OK", "phi": "PHI"}.get(decision, "—"))
-        seg.grid(row=0, column=col, sticky="e", padx=(8, 0))
+        seg.grid(row=0, column=col, sticky="e", padx=(4, 10), pady=7)
 
     def _set_adjudication(self, akey, ui_value, label) -> None:
         if ui_value == "OK":
@@ -433,6 +461,8 @@ class PixelScanView(View):
                         if f["category"] != "suspect" or f["text"] in seen:
                             continue
                         seen.add(f["text"])
+                        if f.get("cleaned"):      # already redacted -> not pending
+                            continue
                         keys.add(pixelscan.adjudication_key(
                             st.study_uid, se.series_uid, "suspect", f["text"]))
         return keys
@@ -440,16 +470,58 @@ class PixelScanView(View):
     def _update_adj_counter(self) -> None:
         keys = self._review_keys()
         total = len(keys)
+        ok = sum(1 for k in keys if self._adjudications.get(k) == "ok")
+        phi = sum(1 for k in keys if self._adjudications.get(k) == "phi")
+        self._update_clean_btn(phi)
         if not total:
             self.adj_lbl.configure(text="")
             return
-        ok = sum(1 for k in keys if self._adjudications.get(k) == "ok")
-        phi = sum(1 for k in keys if self._adjudications.get(k) == "phi")
         left = total - ok - phi
         self.adj_lbl.configure(
             text=f"Adjudicated {ok + phi}/{total}  ·  {ok} OK · {phi} PHI · "
                  f"{left} left",
             text_color=(_ADJ_OK if left == 0 else MUTED))
+
+    def _update_clean_btn(self, phi_count: int) -> None:
+        if phi_count > 0:
+            self.clean_btn.configure(text=f"Clean confirmed PHI ({phi_count})")
+            if not self.clean_btn.winfo_ismapped():
+                self.clean_btn.pack(side="right", padx=PAD)
+        else:
+            self.clean_btn.pack_forget()
+
+    def _clean_confirmed(self) -> None:
+        """Redact the suspects the user marked PHI into corrected output copies."""
+        phi_keys = [k for k in self._review_keys()
+                    if self._adjudications.get(k) == "phi"]
+        if not phi_keys:
+            return
+        if not self.out_dir:
+            self._pick_out()
+            if not self.out_dir:
+                return
+        if not messagebox.askyesno(
+                "Clean confirmed PHI",
+                f"Black out {len(phi_keys)} confirmed-PHI finding(s) and write "
+                f"corrected copies to:\n{self.out_dir}\n\nContinue?",
+                parent=self):
+            return
+        base = pixelscan.mirror_base(self.files)
+        try:
+            summary = pixelscan.redact_adjudicated(
+                self._studies, self._adjudications, str(self.out_dir), base)
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Clean confirmed PHI",
+                                 f"Could not clean: {exc}", parent=self)
+            return
+        self._viewer_started = False      # output changed -> re-prepare viewer
+        self._render()
+        msg = (f"Cleaned {summary['instances']} image(s), "
+               f"{summary['boxes']} region(s).\nCorrected copies in "
+               f"{self.out_dir}.")
+        if summary["failed"]:
+            msg += f"\n{summary['failed']} could not be written."
+        messagebox.showinfo("Clean confirmed PHI", msg, parent=self)
 
     def _save_report(self) -> None:
         if not self._studies:

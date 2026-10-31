@@ -20,7 +20,6 @@ import mimetypes
 import os
 import secrets
 import shutil
-import subprocess
 import sys
 import threading
 import webbrowser
@@ -587,40 +586,19 @@ def goto(study_uid: str, series_uid: str = "") -> bool:
 
 # -- window --------------------------------------------------------------
 
-def _app_browser() -> str | None:
-    """Path to Edge/Chrome, which can open a chrome-less ``--app`` window."""
-    candidates = []
-    for env in ("PROGRAMFILES(X86)", "PROGRAMFILES", "LOCALAPPDATA"):
-        base = os.environ.get(env)
-        if base:
-            candidates += [Path(base) / "Microsoft/Edge/Application/msedge.exe",
-                           Path(base) / "Google/Chrome/Application/chrome.exe"]
-    for c in candidates:
-        if c.is_file():
-            return str(c)
-    for name in ("msedge", "google-chrome", "chromium", "chromium-browser",
-                 "chrome"):
-        found = shutil.which(name)
-        if found:
-            return found
-    return None
-
-
 def open_window(url: str) -> None:
-    """Open ``url`` in an app-style window, else the default browser."""
-    exe = _app_browser()
-    if exe:
-        # A dedicated profile makes --app open a fresh window even when the
-        # browser is already running, and keeps viewer state out of the
-        # user's normal browsing profile.
-        profile = paths.data_dir() / "viewer-profile"
-        try:
-            subprocess.Popen([exe, f"--app={url}", f"--user-data-dir={profile}",
-                              "--no-first-run", "--no-default-browser-check"],
-                             stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL)
-            return
-        except OSError as exc:
-            _log.warning("Could not start %s (%s); using default browser",
-                         exe, exc)
+    """Open ``url`` in a normal browser window via the OS default handler.
+
+    The chrome-less ``--app`` mode with a dedicated ``--user-data-dir`` was
+    dropped: on some managed / locked-down Edge installs it opened a blank
+    window (the page never loaded), while a plain browser window - the same
+    thing a double-clicked link opens - loads the viewer reliably.
+    """
+    try:
+        os.startfile(url)        # Windows: ShellExecute -> default browser
+        return
+    except AttributeError:       # not Windows
+        pass
+    except OSError as exc:
+        _log.info("os.startfile failed (%s); falling back to webbrowser", exc)
     webbrowser.open(url)

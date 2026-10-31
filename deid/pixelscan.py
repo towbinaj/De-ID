@@ -266,6 +266,66 @@ def scan_studies(files, *, redact: bool = False, out_dir=None,
     return build_studies(instances)
 
 
+def redact_adjudicated(studies: list[StudyReport], adjudications: dict,
+                       out_dir, base=None) -> dict:
+    """Black out the suspect findings a human confirmed as PHI and write the
+    corrected copies into ``out_dir`` (mirroring the input layout like the scan).
+
+    ``adjudications`` maps an :func:`adjudication_key` to a decision; only
+    ``"phi"`` suspect decisions are applied. Each affected instance is read from
+    its existing corrected copy if it has one (so the confirmed regions are added
+    on top of the metadata-matched redaction) else from the original, the boxes
+    are blanked, and the result is written to the mirrored output path. The
+    report model is updated in place (``out_path`` / ``redacted`` set, the
+    cleaned findings tagged ``cleaned``). Returns a summary dict.
+    """
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    phi_texts: dict[tuple, set] = {}
+    for key, decision in adjudications.items():
+        if decision != "phi":
+            continue
+        study_uid, series_uid, category, text = key
+        if category == "suspect":
+            phi_texts.setdefault((study_uid, series_uid), set()).add(text)
+
+    summary = {"instances": 0, "boxes": 0, "failed": 0}
+    if not phi_texts:
+        return summary
+    for st in studies:
+        for se in st.series:
+            texts = phi_texts.get((st.study_uid, se.series_uid))
+            if not texts:
+                continue
+            for inst in se.instances:
+                boxes = [f["box"] for f in inst.findings
+                         if f["category"] == "suspect" and f["text"] in texts]
+                if not boxes:
+                    continue
+                src = Path(inst.out_path or inst.path)
+                dest = _corrected_dest(Path(inst.path), out, base)
+                try:
+                    ds = dcmread(str(src), force=True)
+                    n = ocr.redact_boxes(ds, boxes)
+                    if not n:
+                        summary["failed"] += 1
+                        continue
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    ds.save_as(str(dest), enforce_file_format=True)
+                    inst.out_path = str(dest)
+                    inst.redacted += n
+                    for f in inst.findings:
+                        if f["category"] == "suspect" and f["text"] in texts:
+                            f["cleaned"] = True
+                    summary["instances"] += 1
+                    summary["boxes"] += n
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("Clean confirmed PHI failed for %s: %s",
+                                src.name, exc)
+                    summary["failed"] += 1
+    return summary
+
+
 # -- adjudication --------------------------------------------------------
 def adjudication_key(study_uid: str, series_uid: str, category: str,
                      text: str) -> tuple:

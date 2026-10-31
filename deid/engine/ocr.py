@@ -243,6 +243,30 @@ def _write_back(ds, arr, ts) -> bool:
         return False
 
 
+def redact_boxes(ds, boxes) -> int:
+    """Black out the given ``(y0, y1, x0, x1)`` boxes in ``ds`` in place.
+
+    No OCR - used to apply human-confirmed (adjudicated) regions, so it works
+    even without a Tesseract engine. On a multi-frame object the boxes are
+    blanked on every frame (burned-in overlays repeat). Returns the number of
+    boxes written, or 0 if the pixels can't be read or written back.
+    """
+    boxes = list(boxes or [])
+    if not boxes:
+        return 0
+    try:
+        ts = ds.file_meta.TransferSyntaxUID
+        arr = ds.pixel_array
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Redact skipped (cannot read pixels): %s", exc)
+        return 0
+    _, single = _representative_frame(arr)
+    _blank_boxes(arr, boxes, single)
+    if _write_back(ds, arr, ts):
+        return len(boxes)
+    return 0
+
+
 def scan_and_redact(ds, phi=None, *, min_confidence: float = 0.5,
                     modalities=None, redact: bool = False) -> tuple[list, int]:
     """Single OCR pass: classify burned-in text and, if ``redact``, blank PHI.
