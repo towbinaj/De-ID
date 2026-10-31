@@ -10,6 +10,7 @@ first: matching objects are dropped (omitted from the output) or quarantined
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 from typing import Callable
@@ -26,13 +27,30 @@ log = get_logger("engine.fileproc")
 OnItem = Callable[[int, int, Path, bool, str], None]
 
 
-def _out_name(ds, src: Path) -> str:
-    uid = str(getattr(ds, "SOPInstanceUID", "") or "").strip()
-    return f"{uid}.dcm" if uid else f"{src.stem}.dcm"
-
-
 def _s(ds, kw: str) -> str:
     return str(getattr(ds, kw, "") or "").strip()
+
+
+def _safe(component: str, default: str) -> str:
+    """A filesystem-safe path component. UIDs and pseudonyms are already safe;
+    this just guards against odd characters and empty values."""
+    s = re.sub(r"[^A-Za-z0-9._-]", "_", str(component or "").strip())
+    return s or default
+
+
+def _out_relpath(ds, src: Path) -> Path:
+    """Output path for a de-identified file, relative to the output folder.
+
+    Organizes output by the (already de-identified) identifiers -
+    ``<PatientID>/<StudyInstanceUID>/<SeriesInstanceUID>/<SOPInstanceUID>.dcm`` -
+    so studies and series stay grouped without any original (PHI-bearing) folder
+    or file names leaking into the shared output.
+    """
+    pid = _safe(_s(ds, "PatientID"), "unknown-patient")
+    study = _safe(_s(ds, "StudyInstanceUID"), "unknown-study")
+    series = _safe(_s(ds, "SeriesInstanceUID"), "unknown-series")
+    sop = _safe(_s(ds, "SOPInstanceUID"), "") or _safe(src.stem, "object")
+    return Path(pid) / study / series / f"{sop}.dcm"
 
 
 def _quarantine(src: Path, root: Path) -> None:
@@ -116,7 +134,8 @@ def deidentify_files(files: list[Path], out_dir: str | Path,
             o_suid = _s(ds, "StudyInstanceUID")
 
             proc.process(ds)
-            dest = out / _out_name(ds, f)
+            dest = out / _out_relpath(ds, f)
+            dest.parent.mkdir(parents=True, exist_ok=True)
             ds.save_as(str(dest), enforce_file_format=True)
             written.append(str(dest))
             ok += 1

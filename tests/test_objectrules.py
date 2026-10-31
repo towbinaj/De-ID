@@ -50,7 +50,7 @@ def test_fileproc_drops_instances(tmp_path):
     res = fileproc.deidentify_files(files, tmp_path / "out", cfg,
                                     on_item=lambda *a: None, drop_rules=rules)
     assert res["dropped"] == 1 and res["ok"] == 1
-    written = list((tmp_path / "out").glob("*.dcm"))
+    written = list((tmp_path / "out").rglob("*.dcm"))   # output is nested by IDs
     assert len(written) == 1
     assert str(dcmread(str(written[0])).Modality) == "CT"
 
@@ -67,7 +67,7 @@ def test_fileproc_quarantines_original(tmp_path):
                                     on_item=lambda *a: None, drop_rules=rules,
                                     quarantine_root=qdir)
     assert res["quarantined"] == 1 and res["ok"] == 0
-    assert not list((tmp_path / "out").glob("*.dcm"))     # nothing written
+    assert not list((tmp_path / "out").rglob("*.dcm"))    # nothing written
     quarantined = list(qdir.glob("*.dcm"))
     assert len(quarantined) == 1
     # The quarantined copy is the ORIGINAL (not de-identified).

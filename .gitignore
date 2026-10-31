@@ -31,6 +31,9 @@ dist/
 # Bundled Tesseract OCR engine - staged by scripts/fetch_tesseract.py, not in git
 assets/tesseract/
 
+# Bundled OHIF viewer build - staged by scripts/fetch_ohif.py, not in git
+assets/ohif-viewer/
+
 # ---------------------------------------------------------------------------
 # Editor / OS
 # ---------------------------------------------------------------------------

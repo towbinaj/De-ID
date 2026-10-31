@@ -25,6 +25,10 @@ _STATUS_COLOR = {
     pixelscan.STATUS_REVIEW: "#e05a5a",
 }
 _CAT_LABEL = {"name": "NAME", "id": "ID", "date": "DATE", "suspect": "review"}
+# Adjudication row colors: undecided (amber), OK/not-PHI (green), confirmed PHI.
+_ADJ_UNDECIDED = "#e0a05a"
+_ADJ_OK = "#5cb85c"
+_ADJ_PHI = "#e05a5a"
 _FILTERS = {"All studies": None, "Needs review": pixelscan.STATUS_REVIEW,
             "Corrected": pixelscan.STATUS_CORRECTED, "Pass": pixelscan.STATUS_PASS}
 
@@ -40,8 +44,15 @@ class PixelScanView(View):
         self.files: list[Path] = []
         self.out_dir: Path | None = None
         self._studies: list = []
+        self._adjudications: dict = {}   # adjudication_key -> "ok" | "phi"
         self._cancel = False
         self._scanning = False
+        self._viewer_started = False     # the persistent OHIF window is open
+        try:
+            from .. import ohif
+            self._ohif_ok = ohif.available()
+        except Exception:  # noqa: BLE001
+            self._ohif_ok = False
 
         self.body.grid_rowconfigure(5, weight=1)
         self.body.grid_columnconfigure(0, weight=1)
@@ -90,6 +101,10 @@ class PixelScanView(View):
                                       command=self._save_report)
         self.save_btn.pack(side="right")
         self.save_btn.pack_forget()
+        self.adj_lbl = ctk.CTkLabel(barrow, text="", anchor="e",
+                                    text_color=MUTED,
+                                    font=ctk.CTkFont(size=12))
+        self.adj_lbl.pack(side="right", padx=PAD)
         self.summary = ctk.CTkLabel(barrow, text="", anchor="w", wraplength=520,
                                     justify="left")
         self.summary.pack(side="left", padx=PAD)
@@ -217,6 +232,8 @@ class PixelScanView(View):
     def _scan_done(self, studies) -> None:
         self._scanning = False
         self._studies = studies or []
+        self._adjudications = {}          # fresh results clear prior decisions
+        self._viewer_started = False      # new results -> fresh viewer manifest
         self.scan_btn.configure(state="normal")
         self.cancel_btn.configure(state="disabled")
         self._render()
@@ -224,7 +241,8 @@ class PixelScanView(View):
             ov, fn = pixelscan.default_report_paths(self.app.active_project.name)
             try:
                 pixelscan.write_overview_csv(self._studies, ov)
-                pixelscan.write_findings_csv(self._studies, fn)
+                pixelscan.write_findings_csv(self._studies, fn,
+                                             self._adjudications)
                 self._report_paths = (ov, fn)
                 self.save_btn.pack(side="right")
             except OSError:
@@ -239,6 +257,7 @@ class PixelScanView(View):
             self.summary.configure(
                 text=f"No burned-in text found in {len(self.files):,} file(s).",
                 text_color="#5cb85c")
+            self.adj_lbl.configure(text="")
             return
         n_rev = sum(1 for s in studies if s.status == pixelscan.STATUS_REVIEW)
         n_cor = sum(1 for s in studies if s.status == pixelscan.STATUS_CORRECTED)
@@ -259,6 +278,7 @@ class PixelScanView(View):
                              text_color=MUTED, anchor="w").grid(sticky="ew")
                 break
             shown += self._render_study(st)
+        self._update_adj_counter()
 
     def _render_study(self, st) -> int:
         color = _STATUS_COLOR.get(st.status, MUTED)
@@ -272,32 +292,164 @@ class PixelScanView(View):
                      font=ctk.CTkFont(size=13, weight="bold")).grid(
             sticky="ew", padx=4, pady=(10, 0))
         rows = 1
+        # Keep the actionable (suspect) findings visually apart from the ones
+        # already matched/handled, so handled items don't read as "to review".
+        review_series, handled_series = [], []
         for se in st.series:
-            if not se.instances or (not se.n_phi and not se.n_suspects):
+            if not se.instances:
                 continue
-            ctk.CTkLabel(
-                self.results, anchor="w", justify="left", text_color=MUTED,
-                text=f"   Series {se.series_number or '?'} "
-                f"{se.series_desc or ''} [{se.status}] — {se.n_phi} PHI / "
-                f"{se.n_suspects} review").grid(sticky="ew", padx=4)
-            rows += 1
-            seen = set()
-            for inst in se.instances:
-                for f in inst.findings:
-                    key = (f["category"], f["text"])
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    c = (_STATUS_COLOR[pixelscan.STATUS_REVIEW]
-                         if f["category"] == "suspect"
-                         else _STATUS_COLOR[pixelscan.STATUS_CORRECTED])
-                    ctk.CTkLabel(
-                        self.results, anchor="w", justify="left", text_color=c,
-                        text=f"      [{_CAT_LABEL.get(f['category'])}] "
-                        f"“{f['text']}” ({f['conf']:.0f}%)").grid(
-                        sticky="ew", padx=4)
-                    rows += 1
+            suspects, matched = self._series_findings(se)
+            if suspects:
+                review_series.append((se, suspects))
+            if matched:
+                handled_series.append((se, matched))
+        rows += self._render_group(
+            st, "Needs review", _STATUS_COLOR[pixelscan.STATUS_REVIEW],
+            review_series, review=True)
+        rows += self._render_group(
+            st, "Already matched — handled",
+            _STATUS_COLOR[pixelscan.STATUS_CORRECTED], handled_series,
+            review=False)
         return rows
+
+    @staticmethod
+    def _series_findings(se):
+        """De-duplicated (per series) findings split into (suspects, matched),
+        preserving first-seen order."""
+        suspects, matched = [], []
+        seen = set()
+        for inst in se.instances:
+            for f in inst.findings:
+                key = (f["category"], f["text"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                (suspects if f["category"] == "suspect"
+                 else matched).append(f)
+        return suspects, matched
+
+    def _view_in_ohif(self, study_uid, series_uid="") -> None:
+        """Open (or re-point) the persistent OHIF window on this study/series."""
+        from .. import ohif
+        try:
+            if not self._viewer_started:
+                shell, _m = ohif.prepare_unified(self.files)
+                ohif.open_window(shell)
+                self._viewer_started = True
+            ohif.goto(study_uid, series_uid)
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror(
+                "Viewer", f"Could not open the image viewer:\n{exc}",
+                parent=self)
+
+    def _view_button(self, parent, st, se, **grid):
+        if not self._ohif_ok:
+            return
+        ctk.CTkButton(
+            parent, text="View", width=52, height=24, fg_color="gray40",
+            command=lambda s=st.study_uid, u=se.series_uid:
+            self._view_in_ohif(s, u)).grid(**grid)
+
+    def _render_group(self, st, title, color, series_items, review) -> int:
+        """Render one labeled group (needs-review or handled) within a study."""
+        if not series_items:
+            return 0
+        ctk.CTkLabel(self.results, text=f"   {title}", anchor="w",
+                     text_color=color,
+                     font=ctk.CTkFont(size=12, weight="bold")).grid(
+            sticky="ew", padx=4, pady=(4, 0))
+        rows = 1
+        for se, findings in series_items:
+            srow = ctk.CTkFrame(self.results, fg_color="transparent")
+            srow.grid(sticky="ew", padx=4)
+            srow.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(
+                srow, anchor="w", justify="left", text_color=MUTED,
+                text=f"      Series {se.series_number or '?'} "
+                f"{se.series_desc or ''}").grid(row=0, column=0, sticky="ew")
+            self._view_button(srow, st, se, row=0, column=1, sticky="e",
+                              padx=(8, 0))
+            rows += 1
+            for f in findings:
+                text = (f"         [{_CAT_LABEL.get(f['category'])}] "
+                        f"“{f['text']}” ({f['conf']:.0f}%)")
+                if review:
+                    self._render_review_row(st, se, f, text)
+                else:
+                    ctk.CTkLabel(
+                        self.results, anchor="w", justify="left", text=text,
+                        text_color=_STATUS_COLOR[pixelscan.STATUS_CORRECTED]
+                    ).grid(sticky="ew", padx=4)
+                rows += 1
+        return rows
+
+    @staticmethod
+    def _adj_color(decision):
+        return {"ok": _ADJ_OK, "phi": _ADJ_PHI}.get(decision, _ADJ_UNDECIDED)
+
+    def _render_review_row(self, st, se, finding, text) -> None:
+        akey = pixelscan.adjudication_key(
+            st.study_uid, se.series_uid, "suspect", finding["text"])
+        decision = self._adjudications.get(akey)
+        row = ctk.CTkFrame(self.results, fg_color="transparent")
+        row.grid(sticky="ew", padx=4)
+        row.grid_columnconfigure(0, weight=1)
+        lbl = ctk.CTkLabel(row, anchor="w", justify="left", text=text,
+                           wraplength=520,
+                           text_color=self._adj_color(decision))
+        lbl.grid(row=0, column=0, sticky="ew")
+        col = 1
+        if self._ohif_ok:
+            self._view_button(row, st, se, row=0, column=col, sticky="e",
+                              padx=(8, 0))
+            col += 1
+        seg = ctk.CTkSegmentedButton(
+            row, values=["—", "OK", "PHI"], width=140, height=26,
+            font=ctk.CTkFont(size=11),
+            command=lambda v, k=akey, w=lbl: self._set_adjudication(k, v, w))
+        seg.set({"ok": "OK", "phi": "PHI"}.get(decision, "—"))
+        seg.grid(row=0, column=col, sticky="e", padx=(8, 0))
+
+    def _set_adjudication(self, akey, ui_value, label) -> None:
+        if ui_value == "OK":
+            self._adjudications[akey] = "ok"
+        elif ui_value == "PHI":
+            self._adjudications[akey] = "phi"
+        else:
+            self._adjudications.pop(akey, None)
+        label.configure(
+            text_color=self._adj_color(self._adjudications.get(akey)))
+        self._update_adj_counter()
+
+    def _review_keys(self) -> set:
+        """Every distinct suspect row the user can adjudicate (deduped per
+        series, matching how the report renders them)."""
+        keys = set()
+        for st in self._studies:
+            for se in st.series:
+                seen = set()
+                for inst in se.instances:
+                    for f in inst.findings:
+                        if f["category"] != "suspect" or f["text"] in seen:
+                            continue
+                        seen.add(f["text"])
+                        keys.add(pixelscan.adjudication_key(
+                            st.study_uid, se.series_uid, "suspect", f["text"]))
+        return keys
+
+    def _update_adj_counter(self) -> None:
+        keys = self._review_keys()
+        total = len(keys)
+        if not total:
+            self.adj_lbl.configure(text="")
+            return
+        ok = sum(1 for k in keys if self._adjudications.get(k) == "ok")
+        phi = sum(1 for k in keys if self._adjudications.get(k) == "phi")
+        left = total - ok - phi
+        self.adj_lbl.configure(
+            text=f"Adjudicated {ok + phi}/{total}  ·  {ok} OK · {phi} PHI · "
+                 f"{left} left",
+            text_color=(_ADJ_OK if left == 0 else MUTED))
 
     def _save_report(self) -> None:
         if not self._studies:
@@ -315,7 +467,8 @@ class PixelScanView(View):
         ov, fn = pixelscan.default_report_paths(self.app.active_project.name)
         try:
             pixelscan.write_overview_csv(self._studies, Path(folder) / ov.name)
-            pixelscan.write_findings_csv(self._studies, Path(folder) / fn.name)
+            pixelscan.write_findings_csv(self._studies, Path(folder) / fn.name,
+                                         self._adjudications)
         except OSError as exc:
             messagebox.showerror("Save report", f"Could not write: {exc}",
                                  parent=self)

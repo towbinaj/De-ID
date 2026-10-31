@@ -24,6 +24,13 @@ for _root, _dirs, _files in os.walk(os.path.join("assets", "tesseract")):
     for _f in _files:
         datas.append((os.path.join(_root, _f), _root))
 
+# Bundled OHIF viewer build (static web app), staged by scripts/fetch_ohif.py;
+# not in git. If absent, the Pixel PHI Scan's "View" buttons are hidden (OCR-only
+# review still works). Served offline from 127.0.0.1 by deid/ohif.py.
+for _root, _dirs, _files in os.walk(os.path.join("assets", "ohif-viewer")):
+    for _f in _files:
+        datas.append((os.path.join(_root, _f), _root))
+
 # CustomTkinter ships theme JSON + assets; tkinterdnd2 ships the tkdnd binaries.
 for pkg in ("customtkinter", "tkinterdnd2"):
     d, b, h = collect_all(pkg)

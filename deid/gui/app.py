@@ -385,6 +385,12 @@ class App(*_APP_BASES):
             self.pseudonyms.close()
         except Exception:  # noqa: BLE001
             pass
+        # Stop the OHIF viewer server if it was started.
+        try:
+            from .. import ohif
+            ohif.shutdown()
+        except Exception:  # noqa: BLE001
+            pass
         self.destroy()
 
     def enable_drop(self, widget, on_paths, on_enter=None, on_leave=None) -> bool:

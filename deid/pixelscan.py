@@ -24,6 +24,7 @@ to the local, git-ignored pixelscan folder, shown in the UI but never logged.
 from __future__ import annotations
 
 import csv
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -172,6 +173,39 @@ def build_studies(instances: list[InstanceReport]) -> list[StudyReport]:
     return list(studies.values())
 
 
+def mirror_base(files) -> Path | None:
+    """The common parent directory of ``files``, used to mirror their layout
+    under the output folder. ``None`` when they share no base (e.g. different
+    drives) or the list is empty, in which case output falls back to flat names.
+    """
+    parents = []
+    for f in files:
+        try:
+            parents.append(str(Path(f).resolve().parent))
+        except OSError:
+            continue
+    if not parents:
+        return None
+    try:
+        return Path(os.path.commonpath(parents))
+    except ValueError:            # paths on different drives / mixed roots
+        return None
+
+
+def _corrected_dest(src: Path, out: Path, base: Path | None) -> Path:
+    """Where a corrected copy of ``src`` goes under ``out``: its path relative to
+    ``base`` (preserving the original folder structure and filename), or just the
+    filename when it is not under ``base``.
+    """
+    rel = Path(src.name)
+    if base is not None:
+        try:
+            rel = src.resolve().relative_to(base)
+        except (ValueError, OSError):
+            rel = Path(src.name)
+    return out / rel
+
+
 def scan_studies(files, *, redact: bool = False, out_dir=None,
                  min_confidence: float = 0.4, modalities=None,
                  should_cancel: Callable[[], bool] | None = None,
@@ -180,11 +214,14 @@ def scan_studies(files, *, redact: bool = False, out_dir=None,
     """Scan ``files`` for burned-in PHI; optionally redact matches to copies.
 
     When ``redact`` and ``out_dir`` are set, metadata-matched boxes are blacked
-    out and a corrected copy of each changed file is written to ``out_dir``.
+    out and a corrected copy of each changed file is written under ``out_dir``,
+    mirroring the input folder structure (relative to the files' common base).
     """
+    files = [Path(f) for f in files]
     out = Path(out_dir) if out_dir else None
     if out:
         out.mkdir(parents=True, exist_ok=True)
+    base = mirror_base(files) if out else None
     do_redact = bool(redact and out)
     instances: list[InstanceReport] = []
     total = len(files)
@@ -205,9 +242,9 @@ def scan_studies(files, *, redact: bool = False, out_dir=None,
             redact=do_redact)
         out_path = ""
         if redacted and out:
-            sop = _s(ds, "SOPInstanceUID") or f.stem
-            dest = out / f"{sop}.dcm"
+            dest = _corrected_dest(f, out, base)
             try:
+                dest.parent.mkdir(parents=True, exist_ok=True)
                 ds.save_as(str(dest), enforce_file_format=True)
                 out_path = str(dest)
             except Exception as exc:  # noqa: BLE001
@@ -229,13 +266,22 @@ def scan_studies(files, *, redact: bool = False, out_dir=None,
     return build_studies(instances)
 
 
+# -- adjudication --------------------------------------------------------
+def adjudication_key(study_uid: str, series_uid: str, category: str,
+                     text: str) -> tuple:
+    """Stable key for one reviewable finding, shared by the review UI and the
+    findings CSV so a human's decision on a de-duplicated review row maps to all
+    the instances that share that (study, series, category, text)."""
+    return (study_uid, series_uid, category, text)
+
+
 # -- report writers ------------------------------------------------------
 _OVERVIEW_COLS = ["study_uid", "accession", "patient_id", "modalities",
                   "series", "instances", "phi_hits", "suspects", "redacted",
                   "status"]
 _DETAIL_COLS = ["study_uid", "accession", "series_number", "series_desc",
                 "sop_instance", "modality", "category", "text", "confidence",
-                "box", "redacted", "corrected_file"]
+                "box", "redacted", "corrected_file", "adjudicated"]
 
 
 def write_overview_csv(studies: list[StudyReport], path) -> int:
@@ -249,7 +295,12 @@ def write_overview_csv(studies: list[StudyReport], path) -> int:
     return len(studies)
 
 
-def write_findings_csv(studies: list[StudyReport], path) -> int:
+def write_findings_csv(studies: list[StudyReport], path,
+                       adjudications: dict | None = None) -> int:
+    """Write the per-finding detail CSV. ``adjudications`` maps an
+    :func:`adjudication_key` to a human decision (e.g. ``"ok"`` / ``"phi"``),
+    recorded in the ``adjudicated`` column."""
+    adj = adjudications or {}
     n = 0
     with open(path, "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
@@ -260,13 +311,15 @@ def write_findings_csv(studies: list[StudyReport], path) -> int:
                     for f in inst.findings:
                         y0, y1, x0, x1 = f["box"]
                         is_phi = f["category"] in PHI_CATEGORIES
+                        key = adjudication_key(st.study_uid, se.series_uid,
+                                               f["category"], f["text"])
                         w.writerow([
                             st.study_uid, st.accession, se.series_number,
                             se.series_desc, inst.sop, inst.modality,
                             f["category"], f["text"], f"{f['conf']:.0f}",
                             f"{x0},{y0},{x1},{y1}",
                             "yes" if (is_phi and inst.redacted) else "",
-                            inst.out_path])
+                            inst.out_path, adj.get(key, "")])
                         n += 1
     return n
 

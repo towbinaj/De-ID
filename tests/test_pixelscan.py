@@ -82,6 +82,34 @@ def test_default_report_paths_are_local(tmp_path, monkeypatch):
     assert ov.name.endswith("_overview.csv") and fn.name.endswith("_findings.csv")
 
 
+def test_findings_csv_records_adjudication(tmp_path):
+    studies = build_studies([
+        _inst("S1", "A", {"suspect": 2}, accession="ACC1")])
+    adj = {
+        pixelscan.adjudication_key("S1", "A", "suspect", "suspect0"): "phi",
+        pixelscan.adjudication_key("S1", "A", "suspect", "suspect1"): "ok",
+    }
+    path = tmp_path / "fn.csv"
+    pixelscan.write_findings_csv(studies, path, adj)
+    with open(path, newline="", encoding="utf-8") as fh:
+        rows = list(csv.reader(fh))
+    assert rows[0] == pixelscan._DETAIL_COLS
+    assert rows[0][-1] == "adjudicated"
+    ti, ai = rows[0].index("text"), rows[0].index("adjudicated")
+    by_text = {r[ti]: r[ai] for r in rows[1:]}
+    assert by_text["suspect0"] == "phi"
+    assert by_text["suspect1"] == "ok"
+
+
+def test_findings_csv_adjudication_blank_by_default(tmp_path):
+    studies = build_studies([_inst("S1", "A", {"suspect": 1})])
+    path = tmp_path / "fn.csv"
+    pixelscan.write_findings_csv(studies, path)
+    with open(path, newline="", encoding="utf-8") as fh:
+        rows = list(csv.reader(fh))
+    assert rows[1][-1] == ""          # no decision -> empty adjudicated cell
+
+
 @pytest.mark.skipif(not ocr.available(), reason="no tesseract engine")
 def test_scan_studies_blank_image_is_pass(tmp_path):
     save(make_ct(PatientID="A", StudyInstanceUID="1.1"), tmp_path / "a.dcm")
@@ -91,3 +119,46 @@ def test_scan_studies_blank_image_is_pass(tmp_path):
     assert len(studies) == 1
     assert studies[0].status == pixelscan.STATUS_PASS
     assert studies[0].n_phi == 0 and studies[0].n_suspects == 0
+
+
+# -- corrected-copy output layout (preserve the input folder structure) ------
+def test_mirror_base_none_when_empty():
+    assert pixelscan.mirror_base([]) is None
+
+
+def test_corrected_dest_preserves_structure_below_common_base(tmp_path):
+    root = tmp_path / "drop"
+    (root / "StudyA").mkdir(parents=True)
+    (root / "StudyB" / "Ser2").mkdir(parents=True)
+    fa = root / "StudyA" / "img001.dcm"
+    fb = root / "StudyB" / "Ser2" / "img002.dcm"
+    fa.write_bytes(b"x")
+    fb.write_bytes(b"x")
+    out = tmp_path / "out"
+
+    base = pixelscan.mirror_base([fa, fb])
+    assert base == root.resolve()
+    # Original subfolders AND filenames are kept under the output folder.
+    assert pixelscan._corrected_dest(fa, out, base) == out / "StudyA" / "img001.dcm"
+    assert pixelscan._corrected_dest(fb, out, base) == \
+        out / "StudyB" / "Ser2" / "img002.dcm"
+
+
+def test_corrected_dest_single_file_is_flat(tmp_path):
+    d = tmp_path / "in"
+    d.mkdir()
+    f = d / "only.dcm"
+    f.write_bytes(b"x")
+    out = tmp_path / "out"
+    base = pixelscan.mirror_base([f])
+    assert base == d.resolve()
+    assert pixelscan._corrected_dest(f, out, base) == out / "only.dcm"
+
+
+def test_corrected_dest_falls_back_to_name_when_not_under_base(tmp_path):
+    (tmp_path / "other").mkdir()
+    f = tmp_path / "other" / "x.dcm"
+    f.write_bytes(b"x")
+    out = tmp_path / "out"
+    base = tmp_path / "somewhere" / "else"      # f is not under this base
+    assert pixelscan._corrected_dest(f, out, base) == out / "x.dcm"

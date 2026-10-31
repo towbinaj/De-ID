@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydicom import dcmread
 from pydicom.uid import generate_uid
 
@@ -40,17 +42,44 @@ def test_deidentify_files_writes_and_anonymizes(tmp_path):
         on_item=lambda i, t, p, ok, d: seen.append((p, ok)))
 
     assert res["ok"] == 3 and res["failed"] == 0
-    written = list(out.glob("*.dcm"))
+    written = list(out.rglob("*.dcm"))
     assert len(written) == 3
-    # Every written object is de-identified and consistently re-UID'd.
+    # Output is organized by de-identified IDs, not dumped flat.
+    assert not list(out.glob("*.dcm"))     # nothing sits at the top level
     studies = set()
     for w in written:
+        rel = w.relative_to(out)
+        assert len(rel.parts) == 4         # <pid>/<study>/<series>/<sop>.dcm
         ds = dcmread(str(w))
         assert str(ds.PatientName) == ""
         assert str(ds.PatientID) == ""
         assert str(ds.PatientIdentityRemoved) == "YES"
+        assert rel.name == f"{ds.SOPInstanceUID}.dcm"
+        assert rel.parts[2] == str(ds.SeriesInstanceUID)
         studies.add(str(ds.StudyInstanceUID))
     assert len(studies) == 1          # one remapped StudyInstanceUID for all
+
+
+def test_out_relpath_groups_by_deidentified_ids():
+    ds = make_ct(PatientID="ID-000007", StudyInstanceUID="1.2.3",
+                 SeriesInstanceUID="1.2.3.4", sop_instance="1.2.3.4.5")
+    rel = fileproc._out_relpath(ds, Path("orig/whatever.dcm"))
+    assert rel == Path("ID-000007") / "1.2.3" / "1.2.3.4" / "1.2.3.4.5.dcm"
+
+
+def test_out_relpath_defaults_when_ids_missing():
+    ds = make_ct(PatientID="", StudyInstanceUID="", SeriesInstanceUID="")
+    rel = fileproc._out_relpath(ds, Path("x/orig.dcm"))
+    assert rel.parts[:3] == ("unknown-patient", "unknown-study",
+                             "unknown-series")
+    assert rel.name.endswith(".dcm")
+
+
+def test_out_relpath_sanitizes_components():
+    ds = make_ct(PatientID="a/b c:*", StudyInstanceUID="1.1",
+                 SeriesInstanceUID="1.2", sop_instance="1.3")
+    rel = fileproc._out_relpath(ds, Path("x/o.dcm"))
+    assert rel == Path("a_b_c__") / "1.1" / "1.2" / "1.3.dcm"
 
 
 def test_cancel_stops_early(tmp_path):
