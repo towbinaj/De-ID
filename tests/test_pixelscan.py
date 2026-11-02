@@ -184,7 +184,7 @@ def test_redact_adjudicated_only_touches_phi(tmp_path):
     adj = {pixelscan.adjudication_key(study, series, "suspect", "KEEP"): "ok"}
     summary = pixelscan.redact_adjudicated(studies, adj, tmp_path / "out2",
                                            Path(src).parent)
-    assert summary == {"instances": 0, "boxes": 0, "failed": 0}
+    assert summary == {"instances": 0, "boxes": 0, "failed": 0, "failures": []}
     assert not inst.out_path
     assert not any(f.get("cleaned") for f in inst.findings)
 

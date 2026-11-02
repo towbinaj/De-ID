@@ -535,7 +535,12 @@ class PixelScanView(View):
                f"{summary['boxes']} region(s).\nCorrected copies in "
                f"{self.out_dir}.")
         if summary["failed"]:
-            msg += f"\n{summary['failed']} could not be written."
+            msg += f"\n\n{summary['failed']} could not be written:"
+            for line in summary.get("failures", [])[:6]:
+                msg += f"\n• {line}"
+            extra = summary["failed"] - len(summary.get("failures", [])[:6])
+            if extra > 0:
+                msg += f"\n• …and {extra} more (see the log)."
         messagebox.showinfo("Clean confirmed PHI", msg, parent=self)
 
     def _save_report(self) -> None:

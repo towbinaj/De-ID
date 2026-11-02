@@ -276,6 +276,23 @@ def _write_back(ds, arr, ts) -> bool:
         return False
 
 
+def _ensure_transfer_syntax(ds) -> None:
+    """Make ``ds`` decodable when it was read without file meta.
+
+    Some exported DICOM have no part-10 file meta / TransferSyntaxUID, so
+    ``pixel_array`` raises and the object silently escapes redaction. Default a
+    missing transfer syntax to Implicit VR Little Endian (the DICOM default for
+    a dataset with no file meta), which lets uncompressed pixels decode.
+    """
+    from pydicom.dataset import FileMetaDataset
+    from pydicom.uid import ImplicitVRLittleEndian
+    fm = getattr(ds, "file_meta", None)
+    if fm is None:
+        ds.file_meta = fm = FileMetaDataset()
+    if "TransferSyntaxUID" not in fm:
+        fm.TransferSyntaxUID = ImplicitVRLittleEndian
+
+
 def redact_boxes(ds, boxes) -> int:
     """Black out the given ``(y0, y1, x0, x1)`` boxes in ``ds`` in place.
 
@@ -288,6 +305,7 @@ def redact_boxes(ds, boxes) -> int:
     if not boxes:
         return 0
     try:
+        _ensure_transfer_syntax(ds)
         ts = ds.file_meta.TransferSyntaxUID
         arr = ds.pixel_array
     except Exception as exc:  # noqa: BLE001
@@ -321,6 +339,7 @@ def scan_and_redact(ds, phi=None, *, min_confidence: float = 0.5,
         from . import phimatch
         phi = phimatch.build_phi(ds)
     try:
+        _ensure_transfer_syntax(ds)
         ts = ds.file_meta.TransferSyntaxUID
         arr = ds.pixel_array
     except Exception as exc:  # noqa: BLE001

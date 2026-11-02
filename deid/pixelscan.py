@@ -295,7 +295,7 @@ def redact_adjudicated(studies: list[StudyReport], adjudications: dict,
         if category == "suspect":
             phi_texts.setdefault((study_uid, series_uid), set()).add(text)
 
-    summary = {"instances": 0, "boxes": 0, "failed": 0}
+    summary = {"instances": 0, "boxes": 0, "failed": 0, "failures": []}
     if not phi_texts:
         return summary
     for st in studies:
@@ -318,6 +318,10 @@ def redact_adjudicated(studies: list[StudyReport], adjudications: dict,
                     n = ocr.redact_boxes(ds, boxes)
                     if not n:
                         summary["failed"] += 1
+                        summary["failures"].append(
+                            f"{src.name}: pixels could not be read/decoded")
+                        log.warning("Clean: pixels not decodable for %s",
+                                    src.name)
                         continue
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     ds.save_as(str(dest), enforce_file_format=True)
@@ -332,6 +336,7 @@ def redact_adjudicated(studies: list[StudyReport], adjudications: dict,
                     log.warning("Clean confirmed PHI failed for %s: %s",
                                 src.name, exc)
                     summary["failed"] += 1
+                    summary["failures"].append(f"{src.name}: {exc}")
     return summary
 
 
