@@ -231,7 +231,22 @@ class PixelScanView(View):
             conf = max(0.0, min(1.0, float(self.conf.get() or "0.4")))
         except ValueError:
             conf = 0.4
-        files = list(self.files)
+        # Drop non-DICOM files (e.g. JPEG/PNG added via "All files"): De-ID can't
+        # read or redact their pixels, so OCR would miss burned-in text and
+        # redaction would fail silently. Warn so PHI files aren't overlooked.
+        files = [f for f in self.files if fileops.looks_like_dicom(f)]
+        skipped = len(self.files) - len(files)
+        if skipped:
+            messagebox.showwarning(
+                "Non-DICOM files skipped",
+                f"{skipped} selected file(s) are not DICOM images (e.g. JPEG) "
+                "and will be skipped — De-ID cannot read or redact their pixels.\n\n"
+                "If they contain PHI, remove or de-identify them separately; "
+                "they are NOT in the output.", parent=self)
+        if not files:
+            self._scanning = False
+            self.scan_btn.configure(state="normal")
+            return
         out_dir = str(self.out_dir) if redact else None
         self._cancel = False
         self._scanning = True
