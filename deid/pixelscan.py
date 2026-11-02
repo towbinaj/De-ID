@@ -224,12 +224,13 @@ def scan_studies(files, *, redact: bool = False, out_dir=None,
     base = mirror_base(files) if out else None
     do_redact = bool(redact and out)
     instances: list[InstanceReport] = []
-    scanned: list[tuple[Path, InstanceReport]] = []
-    matched_by_series: dict[str, set] = {}
     total = len(files)
-
-    # Pass 1: OCR every file (no pixel changes yet) and collect, per series, the
-    # union of metadata-matched boxes.
+    # Redaction is strictly per instance: a box is blanked only where it was
+    # actually detected on that image. Boxes are NOT propagated across instances
+    # of a series - a series can mix different images (e.g. a form among still
+    # frames), and propagating one image's text positions onto another would
+    # black out anatomy / scan text. Within a single multi-frame object the
+    # overlay is static, so ocr blanks the matched boxes on every frame of it.
     for i, f in enumerate(files, 1):
         if should_cancel and should_cancel():
             break
@@ -242,8 +243,19 @@ def scan_studies(files, *, redact: bool = False, out_dir=None,
                 on_item(i, total, f, -1)
             continue
         phi = phimatch.build_phi(ds)
-        findings = ocr.scan_dataset(ds, phi, min_confidence=min_confidence,
-                                    modalities=modalities)
+        findings, redacted = ocr.scan_and_redact(
+            ds, phi, min_confidence=min_confidence, modalities=modalities,
+            redact=do_redact)
+        out_path = ""
+        if redacted and out:
+            dest = _corrected_dest(f, out, base)
+            try:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                ds.save_as(str(dest), enforce_file_format=True)
+                out_path = str(dest)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Pixel scan: cannot write corrected %s: %s",
+                            f.name, exc)
         inst = InstanceReport(
             path=str(f), sop=_s(ds, "SOPInstanceUID"),
             study_uid=_s(ds, "StudyInstanceUID"),
@@ -253,37 +265,10 @@ def scan_studies(files, *, redact: bool = False, out_dir=None,
             modality=_s(ds, "Modality"),
             accession=_s(ds, "AccessionNumber"),
             patient_id=_s(ds, "PatientID"), findings=findings,
-            redacted=0, out_path="")
+            redacted=redacted, out_path=out_path)
         instances.append(inst)
-        scanned.append((f, inst))
-        if do_redact:
-            boxes = matched_by_series.setdefault(inst.series_uid, set())
-            for h in findings:
-                if h["category"] != "suspect":
-                    boxes.add(tuple(h["box"]))
         if on_item:
             on_item(i, total, f, len(findings))
-
-    # Pass 2: black out the per-series union of matched boxes on EVERY instance,
-    # so burned-in PHI caught on any frame of a cine is removed from all frames
-    # (and a frame whose own OCR missed the text is still covered).
-    if do_redact:
-        for f, inst in scanned:
-            boxes = [list(b) for b in matched_by_series.get(inst.series_uid, ())]
-            if not boxes:
-                continue
-            try:
-                ds = dcmread(str(f), force=True)
-                n = ocr.redact_boxes(ds, boxes)
-                if n:
-                    dest = _corrected_dest(f, out, base)
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    ds.save_as(str(dest), enforce_file_format=True)
-                    inst.out_path = str(dest)
-                    inst.redacted = n
-            except Exception as exc:  # noqa: BLE001
-                log.warning("Pixel scan: cannot write corrected %s: %s",
-                            f.name, exc)
     return build_studies(instances)
 
 
@@ -318,18 +303,14 @@ def redact_adjudicated(studies: list[StudyReport], adjudications: dict,
             texts = phi_texts.get((st.study_uid, se.series_uid))
             if not texts:
                 continue
-            # Union the confirmed boxes across the whole series, then apply to
-            # EVERY instance - so a cine frame whose OCR missed the text is still
-            # cleaned, matching the auto-redaction's series aggregation.
-            union = set()
             for inst in se.instances:
-                for f in inst.findings:
-                    if f["category"] == "suspect" and f["text"] in texts:
-                        union.add(tuple(f["box"]))
-            if not union:
-                continue
-            boxes = [list(b) for b in union]
-            for inst in se.instances:
+                # Strictly per instance: only blank boxes actually detected on
+                # THIS image, never positions carried over from other instances
+                # (which could land on anatomy / scan text in a mixed series).
+                boxes = [f["box"] for f in inst.findings
+                         if f["category"] == "suspect" and f["text"] in texts]
+                if not boxes:
+                    continue
                 src = Path(inst.out_path or inst.path)
                 dest = _corrected_dest(Path(inst.path), out, base)
                 try:

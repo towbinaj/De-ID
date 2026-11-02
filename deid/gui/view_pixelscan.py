@@ -190,6 +190,15 @@ class PixelScanView(View):
 
     def _clear(self) -> None:
         self.files = []
+        self._studies = []
+        self._adjudications = {}
+        self._viewer_started = False
+        for w in self.results.winfo_children():
+            w.destroy()
+        self.summary.configure(text="")
+        self.adj_lbl.configure(text="")
+        self.save_btn.pack_forget()
+        self.clean_btn.pack_forget()
         self._update_count()
 
     def _update_count(self) -> None:
