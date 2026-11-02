@@ -101,14 +101,15 @@ _SHELL_HTML = """<!doctype html>
 <iframe id="v" src="about:blank"></iframe>
 <div id="hint">Select a finding in the De-ID report to view its image here.</div>
 <script>
-  var seq = -1;
+  var seq = -1, lastUrl = '';
   var frame = document.getElementById('v');
   var hint = document.getElementById('hint');
   function poll(){
     fetch('/deid/control', {cache:'no-store'}).then(function(r){return r.json();})
       .then(function(j){
-        if(j.seq !== seq && j.url){
-          seq = j.seq; hint.style.display = 'none'; frame.src = j.url;
+        if(j.url && (j.seq !== seq || j.url !== lastUrl)){
+          seq = j.seq; lastUrl = j.url;
+          hint.style.display = 'none'; frame.src = j.url;
         }
       }).catch(function(){}).finally(function(){ setTimeout(poll, 500); });
   }
@@ -559,7 +560,8 @@ def prepare_unified(files: Iterable[Path]) -> tuple[str, Manifest]:
         srv.unified_mid = mid
         srv.unified_tokens = list(m.files)
         srv.unified_manifest_url = f"{srv.base_url}/deid/manifest/{mid}.json"
-        srv.target_seq = 0
+        # Keep target_seq monotonic across re-prepares so a refresh after Clean
+        # always registers as a change for the open window; just clear the target.
         srv.target_url = ""
     return f"{srv.base_url}/deid/shell", m
 

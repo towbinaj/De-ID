@@ -48,6 +48,7 @@ class PixelScanView(View):
         self._cancel = False
         self._scanning = False
         self._viewer_started = False     # the persistent OHIF window is open
+        self._viewer_dirty = False       # output changed; rebuild the manifest
         try:
             from .. import ohif
             self._ohif_ok = ohif.available()
@@ -193,6 +194,7 @@ class PixelScanView(View):
         self._studies = []
         self._adjudications = {}
         self._viewer_started = False
+        self._viewer_dirty = False
         for w in self.results.winfo_children():
             w.destroy()
         self.summary.configure(text="")
@@ -254,6 +256,7 @@ class PixelScanView(View):
         self._studies = studies or []
         self._adjudications = {}          # fresh results clear prior decisions
         self._viewer_started = False      # new results -> fresh viewer manifest
+        self._viewer_dirty = False
         self.scan_btn.configure(state="normal")
         self.cancel_btn.configure(state="disabled")
         self._render()
@@ -367,13 +370,20 @@ class PixelScanView(View):
         return files
 
     def _view_in_ohif(self, study_uid, series_uid="") -> None:
-        """Open (or re-point) the persistent OHIF window on this study/series."""
+        """Open (or re-point) the persistent OHIF window on this study/series.
+
+        Rebuilds the manifest when the output changed (e.g. after Clean) so the
+        existing window refreshes to the corrected images instead of showing a
+        stale copy, and without opening a second window.
+        """
         from .. import ohif
         try:
-            if not self._viewer_started:
+            if not self._viewer_started or self._viewer_dirty:
                 shell, _m = ohif.prepare_unified(self._viewer_files())
-                ohif.open_window(shell)
-                self._viewer_started = True
+                if not self._viewer_started:
+                    ohif.open_window(shell)
+                    self._viewer_started = True
+                self._viewer_dirty = False
             ohif.goto(study_uid, series_uid)
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror(
@@ -529,7 +539,7 @@ class PixelScanView(View):
             messagebox.showerror("Clean confirmed PHI",
                                  f"Could not clean: {exc}", parent=self)
             return
-        self._viewer_started = False      # output changed -> re-prepare viewer
+        self._viewer_dirty = True         # output changed -> refresh viewer
         self._render()
         msg = (f"Cleaned {summary['instances']} image(s), "
                f"{summary['boxes']} region(s).\nCorrected copies in "
