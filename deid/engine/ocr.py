@@ -88,11 +88,13 @@ def _run_tsv(exe: str, png_path: str) -> str:
     if tessdata.is_dir():
         env["TESSDATA_PREFIX"] = str(tessdata)
     # --psm 11 = sparse text: find as much text as possible, any orientation.
+    # Capture bytes and decode as UTF-8 (what Tesseract emits); decoding as the
+    # Windows locale (cp1252, the `text=True` default) crashed on any non-cp1252
+    # byte - common on noisy images - which silently dropped ALL findings.
     proc = subprocess.run(
         [exe, png_path, "stdout", "--psm", "11", "tsv"],
-        capture_output=True, text=True, env=env, timeout=120,
-        creationflags=_NO_WINDOW)
-    return proc.stdout
+        capture_output=True, env=env, timeout=120, creationflags=_NO_WINDOW)
+    return proc.stdout.decode("utf-8", "replace")
 
 
 # Burned-in text (ultrasound annotations, face sheets, scanned forms) is often

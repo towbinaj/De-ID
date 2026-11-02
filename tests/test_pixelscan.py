@@ -189,6 +189,29 @@ def test_redact_adjudicated_only_touches_phi(tmp_path):
     assert not any(f.get("cleaned") for f in inst.findings)
 
 
+def test_scan_studies_aggregates_matched_boxes_across_series(tmp_path,
+                                                             monkeypatch):
+    study, series = "STX", "SEX"
+    f1 = _solid_ct(tmp_path / "a.dcm", study, series, "S1", value=1000)
+    f2 = _solid_ct(tmp_path / "b.dcm", study, series, "S2", value=1000)
+    box = (2, 5, 3, 6)
+
+    def fake_scan(ds, phi=None, **kw):
+        # Matched PHI detected on the FIRST frame only (the second "missed" it).
+        if str(getattr(ds, "SOPInstanceUID", "")) == "S1":
+            return [{"category": "name", "text": "DOE", "conf": 90, "box": box}]
+        return []
+    monkeypatch.setattr(ocr, "scan_dataset", fake_scan)
+    out = tmp_path / "out"
+    studies = pixelscan.scan_studies([f1, f2], redact=True, out_dir=str(out))
+    insts = [i for st in studies for se in st.series for i in se.instances]
+    assert len(insts) == 2
+    assert all(i.out_path for i in insts)        # BOTH frames get a corrected copy
+    for i in insts:
+        arr = dcmread(i.out_path).pixel_array
+        assert (arr[2:6, 3:7] == 0).all()        # box blanked on both frames
+
+
 @pytest.mark.skipif(not ocr.available(), reason="no tesseract engine")
 def test_scan_studies_blank_image_is_pass(tmp_path):
     save(make_ct(PatientID="A", StudyInstanceUID="1.1"), tmp_path / "a.dcm")
