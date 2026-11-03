@@ -58,6 +58,29 @@ def test_small_image_is_upscaled():
     assert ocr._ocr_scale(800, 600) > 1.0                 # modest US frame -> up
 
 
+def test_large_page_adds_tiled_highpass_pass(monkeypatch):
+    import numpy as np
+    calls = {"n": 0}
+
+    def fake_tsv(exe, png):
+        calls["n"] += 1
+        return _TSV
+    monkeypatch.setattr(ocr, "tesseract_path", lambda: "tesseract")
+    monkeypatch.setattr(ocr, "_run_tsv", fake_tsv)
+    # Small frame (<= _TILE_MIN_SIDE): the two whole-frame passes only, no tiling.
+    ocr._ocr_words(np.zeros((200, 200), dtype="uint8"), 0.5)
+    assert calls["n"] == 2
+    # A full-page document (shorter side over the gate) adds the tiled pass, so
+    # faint field text gets the per-region upscale a whole-frame pass can't give.
+    calls["n"] = 0
+    big = ocr._ocr_words(np.zeros((900, 900), dtype="uint8"), 0.5)
+    assert calls["n"] > 2                              # tiles added OCR calls
+    # Tiled detections are mapped into frame coordinates via the tile origin, so
+    # some land past the first tile (not all stacked at the top-left).
+    step = ocr._TILE - ocr._TILE_OVERLAP
+    assert any(w["box"][2] >= step or w["box"][0] >= step for w in big)
+
+
 def test_modality_filter_skips():
     ds = _gray8()
     before = ds.PixelData

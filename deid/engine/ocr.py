@@ -105,6 +105,22 @@ def _run_tsv(exe: str, png_path: str) -> str:
 # mapped back to the original pixel coordinates afterwards so redaction is exact.
 _OCR_TARGET_MIN = 1600
 _OCR_MAX_SCALE = 4.0
+# Confidence floor for the low-contrast (high-pass) pass; faint face-sheet text
+# scores low, so it is captured as a suspect rather than dropped.
+_HIGHPASS_MIN_CONF = 0.25
+# A full-page document (electronic face sheet, scanned form) is large, so the
+# whole-frame upscale above tops out small (~1.5x) and the faint gray-on-gray
+# input-FIELD values stay too small for Tesseract to read - only the (white)
+# field LABELS come back. When the frame is this big we ALSO OCR it in
+# overlapping tiles: each tile upscales ~4x and gets its own local-contrast
+# stretch, which is exactly the condition a tight crop of the field reads under.
+# This is a high-pass-only pass (the whole-frame plain pass already caught the
+# normal-contrast text) and is gated on size so small ultrasound frames - which
+# already upscale enough - skip the extra Tesseract calls.
+_TILE_MIN_SIDE = 820      # tile only when the shorter side exceeds this
+_TILE = 440               # tile edge length, original pixels
+_TILE_OVERLAP = 90        # tile overlap so a word is not split across a seam
+_TILE_MAX_SCALE = 6.0
 
 
 def _ocr_scale(width: int, height: int) -> float:
@@ -127,9 +143,13 @@ def _highpass(img):
     return ImageOps.autocontrast(Image.fromarray(hp), cutoff=1)
 
 
-def _tsv_words(exe, img, min_conf: float, scale: float) -> list[dict]:
+def _tsv_words(exe, img, min_conf: float, scale: float,
+               origin: tuple[int, int] = (0, 0)) -> list[dict]:
     """Run Tesseract on one prepared image and parse its TSV to word dicts,
-    mapping boxes back to the original (pre-upscale) coordinates."""
+    mapping boxes back to the original (pre-upscale) coordinates. ``origin``
+    is the tile's (x, y) offset in the original frame, added after the
+    scale-back so tiled detections land in frame coordinates."""
+    ox, oy = origin
     with tempfile.TemporaryDirectory() as td:
         png = os.path.join(td, "frame.png")
         img.save(png)
@@ -150,7 +170,8 @@ def _tsv_words(exe, img, min_conf: float, scale: float) -> list[dict]:
             else:
                 x0, y0, x1, y1 = left, top, left + w, top + h
             out.append({
-                "text": text, "conf": conf, "box": (y0, y1, x0, x1),
+                "text": text, "conf": conf,
+                "box": (y0 + oy, y1 + oy, x0 + ox, x1 + ox),
                 "line": (row.get("block_num"), row.get("par_num"),
                          row.get("line_num"))})
         except (ValueError, KeyError, TypeError):
@@ -181,17 +202,59 @@ def _ocr_words(frame: np.ndarray, min_conf: float) -> list[dict]:
                            Image.LANCZOS)
         return im
 
+    # The high-pass pass reads faint, low-contrast text (gray-on-gray input
+    # fields on electronic face sheets) that comes back at lower confidence, so
+    # it uses a lower floor - caught as review suspects for the user to confirm.
+    hp_floor = min(min_conf, _HIGHPASS_MIN_CONF)
     words: list[dict] = []
     seen: set = set()
-    for img in (prep(base), prep(_highpass(base))):
-        for w in _tsv_words(exe, img, min_conf, scale):
-            # dedupe the same word found in both passes (coarse position key).
+
+    def merge(found):
+        for w in found:
+            # dedupe the same word found in more than one pass/tile (coarse
+            # position key in original-frame coordinates).
             key = (w["text"].upper(), w["box"][0] // 24, w["box"][2] // 24)
             if key in seen:
                 continue
             seen.add(key)
             words.append(w)
+
+    # Whole-frame passes: plain + local-contrast high-pass.
+    merge(_tsv_words(exe, prep(base), min_conf, scale))
+    merge(_tsv_words(exe, prep(_highpass(base)), hp_floor, scale))
+
+    # Large document pages (face sheets / scanned forms) upscale too little as a
+    # whole frame for faint field text to read; an extra tiled high-pass pass
+    # gives each region the ~4x upscale + local stretch a tight crop gets.
+    if min(base.width, base.height) > _TILE_MIN_SIDE:
+        merge(_tiled_highpass_words(exe, base, hp_floor))
     return words
+
+
+def _tiled_highpass_words(exe, base, floor: float) -> list[dict]:
+    """High-pass OCR over overlapping tiles of a large frame.
+
+    Each tile is cropped, upscaled on its own (so small faint text reaches a
+    readable size the whole-frame pass can't give it), high-passed for local
+    contrast, and OCR'd; boxes come back in original-frame coordinates via the
+    tile origin. Caller dedupes against the whole-frame passes.
+    """
+    from PIL import Image
+    width, height = base.width, base.height
+    step = _TILE - _TILE_OVERLAP
+    out: list[dict] = []
+    for ty in range(0, max(1, height - _TILE_OVERLAP), step):
+        for tx in range(0, max(1, width - _TILE_OVERLAP), step):
+            crop = base.crop((tx, ty, min(tx + _TILE, width),
+                              min(ty + _TILE, height)))
+            s = max(1.0, min(_OCR_TARGET_MIN / min(crop.width, crop.height),
+                             _TILE_MAX_SCALE))
+            hp = _highpass(crop)
+            if s > 1.0:
+                hp = hp.resize((round(hp.width * s), round(hp.height * s)),
+                               Image.LANCZOS)
+            out.extend(_tsv_words(exe, hp, floor, s, origin=(tx, ty)))
+    return out
 
 
 def _detect_boxes(frame: np.ndarray, min_conf: float) -> list:
