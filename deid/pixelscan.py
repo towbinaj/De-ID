@@ -78,6 +78,7 @@ class InstanceReport:
     findings: list = field(default_factory=list)
     redacted: int = 0
     out_path: str = ""
+    dropped: bool = False
 
     @property
     def n_phi(self) -> int:
@@ -302,21 +303,44 @@ def scan_studies(files, *, redact: bool = False, out_dir=None,
     return build_studies(instances)
 
 
-def redact_adjudicated(studies: list[StudyReport], adjudications: dict,
-                       out_dir, base=None) -> dict:
-    """Black out the suspect findings a human confirmed as PHI and write the
-    corrected copies into ``out_dir`` (mirroring the input layout like the scan).
+def _apply_drop(inst: InstanceReport, out: Path, base) -> None:
+    """Exclude an instance from the output: remove any corrected copy we wrote
+    for it (never the source) and mark it dropped in the report model."""
+    dest = _corrected_dest(Path(inst.path), out, base)
+    try:
+        if (dest.exists() and out.resolve() in dest.resolve().parents
+                and dest.resolve() != Path(inst.path).resolve()):
+            dest.unlink()
+    except OSError as exc:
+        log.warning("Drop: could not remove corrected copy %s: %s", dest, exc)
+    inst.dropped = True
+    inst.out_path = ""
+    inst.redacted = 0
 
-    ``adjudications`` maps an :func:`adjudication_key` to a decision; only
-    ``"phi"`` suspect decisions are applied. Each affected instance is read from
-    its existing corrected copy if it has one (so the confirmed regions are added
-    on top of the metadata-matched redaction) else from the original, the boxes
-    are blanked, and the result is written to the mirrored output path. The
-    report model is updated in place (``out_path`` / ``redacted`` set, the
-    cleaned findings tagged ``cleaned``). Returns a summary dict.
+
+def redact_adjudicated(studies: list[StudyReport], adjudications: dict,
+                       out_dir, base=None, *, manual: dict | None = None,
+                       dropped: set | None = None) -> dict:
+    """Black out confirmed-PHI regions and write corrected copies into
+    ``out_dir`` (mirroring the input layout like the scan).
+
+    Three sources are applied per instance:
+    * ``adjudications`` - suspect findings a human marked ``"phi"`` (only boxes
+      actually detected on THAT image are blanked, never positions carried from
+      other instances, which could land on anatomy in a mixed series);
+    * ``manual`` - ``{instance_path: [(y0,y1,x0,x1), ...]}`` boxes the user drew
+      over PHI that OCR missed (incl. a whole-image box);
+    * ``dropped`` - a set of instance paths to exclude from the output entirely.
+
+    Each affected instance is read from its existing corrected copy if it has
+    one (so regions stack on the metadata-matched redaction) else from the
+    original. The report model is updated in place (``out_path`` / ``redacted`` /
+    ``dropped``, cleaned suspect findings tagged ``cleaned``). Returns a summary.
     """
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
+    manual = manual or {}
+    dropped = set(dropped or ())
     phi_texts: dict[tuple, set] = {}
     for key, decision in adjudications.items():
         if decision != "phi":
@@ -325,20 +349,21 @@ def redact_adjudicated(studies: list[StudyReport], adjudications: dict,
         if category == "suspect":
             phi_texts.setdefault((study_uid, series_uid), set()).add(text)
 
-    summary = {"instances": 0, "boxes": 0, "failed": 0, "failures": []}
-    if not phi_texts:
-        return summary
+    summary = {"instances": 0, "boxes": 0, "failed": 0, "failures": [],
+               "dropped": 0}
     for st in studies:
         for se in st.series:
-            texts = phi_texts.get((st.study_uid, se.series_uid))
-            if not texts:
-                continue
+            texts = phi_texts.get((st.study_uid, se.series_uid), set())
             for inst in se.instances:
-                # Strictly per instance: only blank boxes actually detected on
-                # THIS image, never positions carried over from other instances
-                # (which could land on anatomy / scan text in a mixed series).
+                if inst.path in dropped:
+                    _apply_drop(inst, out, base)
+                    summary["dropped"] += 1
+                    continue
+                # Strictly per instance: suspect boxes detected on THIS image
+                # plus any boxes the user drew on it.
                 boxes = [f["box"] for f in inst.findings
                          if f["category"] == "suspect" and f["text"] in texts]
+                boxes += list(manual.get(inst.path, ()))
                 if not boxes:
                     continue
                 src = Path(inst.out_path or inst.path)

@@ -68,8 +68,10 @@ De-ID keeps the same engine and rebuilds the experience around focused views.
   series → instance** with a status — **pass** / **corrected** / **needs review** —
   and can redact the metadata-matched PHI into corrected copies. Pattern-based
   "suspects" (date / long-number / name-like text not in the metadata) are flagged
-  for a human. Overview + per-finding CSV reports are written to a local, secure
-  folder.
+  for a human. In review you can also **draw redaction boxes**, blank a **whole
+  image**, or **exclude an object** — a manual fallback for burned-in PHI too
+  faint for OCR to read (e.g. gray-on-gray electronic face sheets). Overview +
+  per-finding CSV reports are written to a local, secure folder.
 - **Receive → anonymize → export queue** — a C-STORE inbox / watch-folder that
   de-identifies incoming studies against the active project and forwards them to a
   research PACS/VNA.

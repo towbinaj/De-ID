@@ -184,9 +184,51 @@ def test_redact_adjudicated_only_touches_phi(tmp_path):
     adj = {pixelscan.adjudication_key(study, series, "suspect", "KEEP"): "ok"}
     summary = pixelscan.redact_adjudicated(studies, adj, tmp_path / "out2",
                                            Path(src).parent)
-    assert summary == {"instances": 0, "boxes": 0, "failed": 0, "failures": []}
+    assert summary == {"instances": 0, "boxes": 0, "failed": 0, "failures": [],
+                       "dropped": 0}
     assert not inst.out_path
     assert not any(f.get("cleaned") for f in inst.findings)
+
+
+def test_redact_adjudicated_applies_manual_boxes(tmp_path):
+    # A box the user DREW (no OCR finding) is blanked on Clean - the fallback for
+    # PHI OCR can't read (e.g. faint face-sheet fields).
+    study, series, sop = "STM", "SEM", "SOPM"
+    src = _solid_ct(tmp_path / "m.dcm", study, series, sop, value=700)
+    inst = InstanceReport(
+        path=src, sop=sop, study_uid=study, series_uid=series,
+        series_number="1", series_desc="", modality="US", findings=[], redacted=0)
+    studies = build_studies([inst])
+    out = tmp_path / "out"
+    summary = pixelscan.redact_adjudicated(
+        studies, {}, out, Path(src).parent, manual={src: [(2, 5, 3, 6)]})
+    assert summary["instances"] == 1 and summary["boxes"] == 1
+    assert inst.out_path and Path(inst.out_path).exists()
+    arr = dcmread(inst.out_path).pixel_array
+    assert (arr[2:6, 3:7] == 0).all()     # drawn box blanked
+    assert arr[0, 0] == 700               # rest preserved
+
+
+def test_redact_adjudicated_drops_object(tmp_path):
+    # Excluding an object removes any corrected copy we wrote and marks it; the
+    # source is never touched.
+    study, series, sop = "STD", "SED", "SOPD"
+    src = _solid_ct(tmp_path / "d.dcm", study, series, sop, value=900)
+    inst = InstanceReport(
+        path=src, sop=sop, study_uid=study, series_uid=series,
+        series_number="1", series_desc="", modality="US", findings=[], redacted=0)
+    studies = build_studies([inst])
+    out = tmp_path / "out"
+    base = Path(src).parent
+    prior = pixelscan._corrected_dest(Path(src), out, base)   # a stale copy
+    prior.parent.mkdir(parents=True, exist_ok=True)
+    prior.write_bytes(b"stale")
+    summary = pixelscan.redact_adjudicated(
+        studies, {}, out, base, dropped={src})
+    assert summary["dropped"] == 1 and summary["instances"] == 0
+    assert inst.dropped and not inst.out_path
+    assert not prior.exists()                        # corrected copy removed
+    assert Path(src).exists()                        # source untouched
 
 
 def test_scan_studies_redacts_strictly_per_instance(tmp_path, monkeypatch):

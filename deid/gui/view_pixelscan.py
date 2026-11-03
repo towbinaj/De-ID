@@ -45,6 +45,9 @@ class PixelScanView(View):
         self.out_dir: Path | None = None
         self._studies: list = []
         self._adjudications: dict = {}   # adjudication_key -> "ok" | "phi"
+        # instance_path -> {"boxes": [...], "redact_all": bool, "drop": bool}
+        # from the manual box editor, for PHI OCR can't read (faint face sheets).
+        self._manual: dict = {}
         self._cancel = False
         self._scanning = False
         self._viewer_started = False     # the persistent OHIF window is open
@@ -194,6 +197,7 @@ class PixelScanView(View):
         self.files = []
         self._studies = []
         self._adjudications = {}
+        self._manual = {}
         self._viewer_started = False
         self._viewer_dirty = False
         for w in self.results.winfo_children():
@@ -270,6 +274,7 @@ class PixelScanView(View):
         self._scanning = False
         self._studies = studies or []
         self._adjudications = {}          # fresh results clear prior decisions
+        self._manual = {}                 # and any manual redactions
         self._viewer_started = False      # new results -> fresh viewer manifest
         self._viewer_dirty = False
         self.scan_btn.configure(state="normal")
@@ -437,6 +442,43 @@ class PixelScanView(View):
             messagebox.showerror("Viewer", f"Could not open the image:\n{exc}",
                                  parent=self)
 
+    def _manual_note(self, se) -> str:
+        """Short suffix on a series row showing any manual redaction set on its
+        representative instance (so the user sees it without reopening)."""
+        if not se.instances:
+            return ""
+        entry = self._manual.get(se.instances[0].path)
+        if not entry:
+            return ""
+        if entry.get("drop"):
+            return "    ✎ excluded from output"
+        if entry.get("redact_all"):
+            return "    ✎ whole image"
+        n = len(entry.get("boxes") or [])
+        return f"    ✎ {n} manual box(es)" if n else ""
+
+    def _edit_button(self, parent, se, **grid) -> None:
+        """Open the manual box editor on this series' representative instance -
+        for PHI OCR can't read (e.g. faint face-sheet fields)."""
+        if not se.instances:
+            return
+        ctk.CTkButton(
+            parent, text="Edit redactions…", width=130, height=24,
+            fg_color="gray35",
+            command=lambda s=se: self._edit_redactions(s)).grid(**grid)
+
+    def _edit_redactions(self, se) -> None:
+        inst = se.instances[0]
+        from .boxeditor import edit_redactions
+        result = edit_redactions(self, inst.path, self._manual.get(inst.path))
+        if result is None:                       # cancelled
+            return
+        if result.get("boxes") or result.get("drop"):
+            self._manual[inst.path] = result
+        else:                                    # everything cleared
+            self._manual.pop(inst.path, None)
+        self._render()
+
     def _render_group(self, st, title, color, series_items, review) -> int:
         """Render one labeled group (needs-review or handled) within a study."""
         if not series_items:
@@ -453,8 +495,11 @@ class PixelScanView(View):
             ctk.CTkLabel(
                 srow, anchor="w", justify="left", text_color=MUTED,
                 text=f"      Series {se.series_number or '?'} "
-                f"{se.series_desc or ''}").grid(row=0, column=0, sticky="ew")
+                f"{se.series_desc or ''}{self._manual_note(se)}").grid(
+                    row=0, column=0, sticky="ew")
             self._view_button(srow, st, se, row=0, column=1, sticky="e",
+                              padx=(8, 0))
+            self._edit_button(srow, se, row=0, column=2, sticky="e",
                               padx=(8, 0))
             rows += 1
             for f in findings:
@@ -547,43 +592,70 @@ class PixelScanView(View):
                  f"{left} left",
             text_color=(_ADJ_OK if left == 0 else MUTED))
 
+    def _manual_pending(self) -> int:
+        """Instances with a manual redaction (drawn boxes or an exclude)."""
+        return sum(1 for e in self._manual.values()
+                   if e.get("boxes") or e.get("drop"))
+
     def _update_clean_btn(self, phi_count: int) -> None:
-        if phi_count > 0:
-            self.clean_btn.configure(text=f"Clean confirmed PHI ({phi_count})")
+        pending = phi_count + self._manual_pending()
+        if pending > 0:
+            self.clean_btn.configure(text=f"Clean confirmed PHI ({pending})")
             if not self.clean_btn.winfo_ismapped():
                 self.clean_btn.pack(side="right", padx=PAD)
         else:
             self.clean_btn.pack_forget()
 
     def _clean_confirmed(self) -> None:
-        """Redact the suspects the user marked PHI into corrected output copies."""
+        """Redact confirmed-PHI suspects AND any manual boxes / excluded objects
+        into corrected output copies."""
         phi_keys = [k for k in self._review_keys()
                     if self._adjudications.get(k) == "phi"]
-        if not phi_keys:
+        manual = {p: e["boxes"] for p, e in self._manual.items()
+                  if e.get("boxes") and not e.get("drop")}
+        dropped = {p for p, e in self._manual.items() if e.get("drop")}
+        if not phi_keys and not manual and not dropped:
             return
         if not self.out_dir:
             self._pick_out()
             if not self.out_dir:
                 return
+        parts = []
+        if phi_keys:
+            parts.append(f"black out {len(phi_keys)} confirmed-PHI finding(s)")
+        if manual:
+            parts.append(f"apply manual boxes on {len(manual)} image(s)")
+        if dropped:
+            parts.append(f"exclude {len(dropped)} object(s)")
         if not messagebox.askyesno(
                 "Clean confirmed PHI",
-                f"Black out {len(phi_keys)} confirmed-PHI finding(s) and write "
-                f"corrected copies to:\n{self.out_dir}\n\nContinue?",
-                parent=self):
+                "This will " + ", ".join(parts) + " and write corrected copies "
+                f"to:\n{self.out_dir}\n\nContinue?", parent=self):
             return
         base = pixelscan.mirror_base(self.files)
         try:
             summary = pixelscan.redact_adjudicated(
-                self._studies, self._adjudications, str(self.out_dir), base)
+                self._studies, self._adjudications, str(self.out_dir), base,
+                manual=manual, dropped=dropped)
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Clean confirmed PHI",
                                  f"Could not clean: {exc}", parent=self)
             return
+        # Drop any manual entries now applied (written or excluded) so they don't
+        # linger as pending; a failed instance keeps its entry for a retry.
+        for st in self._studies:
+            for se in st.series:
+                for inst in se.instances:
+                    if inst.path in self._manual and (inst.out_path
+                                                      or inst.dropped):
+                        self._manual.pop(inst.path, None)
         self._viewer_dirty = True         # output changed -> refresh viewer
         self._render()
         msg = (f"Cleaned {summary['instances']} image(s), "
-               f"{summary['boxes']} region(s).\nCorrected copies in "
-               f"{self.out_dir}.")
+               f"{summary['boxes']} region(s).")
+        if summary.get("dropped"):
+            msg += f"\nExcluded {summary['dropped']} object(s) from the output."
+        msg += f"\nCorrected copies in {self.out_dir}."
         if summary["failed"]:
             msg += f"\n\n{summary['failed']} could not be written:"
             for line in summary.get("failures", [])[:6]:
