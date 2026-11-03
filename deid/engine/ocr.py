@@ -215,8 +215,34 @@ _SCAN_TERMS = {
     "HU", "BPM", "CINE", "DOSE", "CTDI", "DLP", "SE", "IM", "SL",
 }
 
+# Common ALL-CAPS labels on images (orientation, anatomy, exam/mode words) that
+# are not PHI - excluded from the all-caps "name-like" suspect check so the
+# review list is not flooded. The user can still flag anything we let through.
+_COMMON_LABELS = {
+    # orientation / view
+    "CORONAL", "SAGITTAL", "AXIAL", "TRANS", "TRANSVERSE", "LONG",
+    "LONGITUDINAL", "OBLIQUE", "DECUBITUS", "SUPINE", "PRONE", "ERECT",
+    "LEFT", "RIGHT", "MIDLINE", "LATERAL", "MEDIAL", "ANTERIOR", "POSTERIOR",
+    "SUPERIOR", "INFERIOR", "PROXIMAL", "DISTAL", "MID", "UPPER", "LOWER",
+    # anatomy
+    "HEAD", "NECK", "CHEST", "ABDOMEN", "PELVIS", "BRAIN", "SPINE", "KIDNEY",
+    "LIVER", "SPLEEN", "BLADDER", "THYROID", "HEART", "AORTA", "CAROTID",
+    "RENAL", "HEPATIC", "BREAST", "SCROTUM", "TESTIS", "OVARY", "UTERUS",
+    "THORAX", "LUNG", "FEMUR", "HIP", "KNEE", "SHOULDER", "WRIST", "ANKLE",
+    "FOOT", "HAND", "ELBOW", "THIGH", "CALF", "GALLBLADDER", "PANCREAS",
+    # exam / mode / general
+    "NEONATAL", "PEDIATRIC", "ROUTINE", "GENERAL", "STUDY", "EXAM", "VIEW",
+    "IMAGE", "SERIES", "DOPPLER", "COLOR", "COLOUR", "POWER", "PULSE", "FLOW",
+    "MODE", "FREEZE", "DUAL", "HARMONIC", "COMPOUND", "DEPTH", "FOCUS",
+    "FRAME", "ZOOM", "MEASURE", "AREA", "GAIN", "GENERAL", "WITH", "WITHOUT",
+    "ECHO", "SCAN", "COMPLETE", "LIMITED", "PORTABLE", "STAT",
+    # common ultrasound on-screen control labels
+    "GEN", "DYN", "OFF", "RES", "PEN", "MAP", "FRQ", "THI", "CRI", "SRI",
+}
+
 _DATE_RE = re.compile(r"^\d{1,4}[/.\-]\d{1,2}([/.\-]\d{1,4})?$")
 _NAME_RE = re.compile(r"^[A-Z][a-z]{2,}$")      # a single Capitalised word
+_ALPHA_RE = re.compile(r"[^A-Za-z']")
 
 
 def _is_suspect(text: str) -> bool:
@@ -228,7 +254,13 @@ def _is_suspect(text: str) -> bool:
         return True
     if up.isdigit() and len(up) >= 6:           # long bare number (MRN/acc-like)
         return True
-    if _NAME_RE.match(t) and up not in _SCAN_TERMS:   # a name-like word
+    if _NAME_RE.match(t):                       # Title-case word (e.g. "Smith")
+        return True
+    # ALL-CAPS alphabetic word (e.g. "SMITH", "O'BRIEN") that is not a known
+    # scan/anatomy label -> likely a burned-in name.
+    alpha = _ALPHA_RE.sub("", t)
+    if (3 <= len(alpha) <= 20 and alpha.isupper()
+            and up not in _SCAN_TERMS and up not in _COMMON_LABELS):
         return True
     return False
 

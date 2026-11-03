@@ -84,6 +84,17 @@ def test_redacts_detected_region(monkeypatch):
     assert out.sum() < 255 * 16 * 16           # but not the whole image
 
 
+def test_is_suspect_catches_all_caps_names():
+    s = ocr._is_suspect
+    assert s("SMITH") and s("O'BRIEN") and s("DOE")    # ALL-CAPS names
+    assert s("Smith") and s("Doe")                     # Title-case names
+    assert s("1234567")                                # long number
+    # not PHI: anatomy / view / scan-control labels and short codes
+    for w in ("ABDOMEN", "CORONAL", "NEONATAL", "HEAD", "GEN", "DYN", "OFF",
+              "RS", "AP", "2D"):
+        assert not s(w), w
+
+
 def test_processor_invokes_ocr_when_enabled(monkeypatch):
     calls = {"n": 0}
     monkeypatch.setattr(ocr, "redact_burned_in_text",
