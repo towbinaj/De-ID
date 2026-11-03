@@ -48,6 +48,10 @@ class PixelScanView(View):
         # instance_path -> {"boxes": [...], "redact_all": bool, "drop": bool}
         # from the manual box editor, for PHI OCR can't read (faint face sheets).
         self._manual: dict = {}
+        # Study details render only when expanded, so a big report doesn't build
+        # thousands of widgets at once (what made the UI paint/resize slowly).
+        self._expanded: set = set()      # study_uids currently expanded
+        self._show_all: set = set()      # (study, series, review) groups uncapped
         self._cancel = False
         self._scanning = False
         self._viewer_started = False     # the persistent OHIF window is open
@@ -198,6 +202,8 @@ class PixelScanView(View):
         self._studies = []
         self._adjudications = {}
         self._manual = {}
+        self._expanded = set()
+        self._show_all = set()
         self._viewer_started = False
         self._viewer_dirty = False
         for w in self.results.winfo_children():
@@ -275,6 +281,11 @@ class PixelScanView(View):
         self._studies = studies or []
         self._adjudications = {}          # fresh results clear prior decisions
         self._manual = {}                 # and any manual redactions
+        self._show_all = set()
+        # Auto-expand when there are only a couple of studies (no need to click);
+        # larger result sets start collapsed so the view stays fast.
+        self._expanded = ({s.study_uid for s in self._studies}
+                          if len(self._studies) <= 2 else set())
         self._viewer_started = False      # new results -> fresh viewer manifest
         self._viewer_dirty = False
         self.scan_btn.configure(state="normal")
@@ -292,6 +303,13 @@ class PixelScanView(View):
                 self._report_paths = None
 
     # -- rendering -------------------------------------------------------
+    # Studies render COLLAPSED: a study's series + findings are built only when
+    # it is expanded, so a big report doesn't create thousands of CustomTkinter
+    # widgets up front (which made painting and window-resizing crawl). Within an
+    # expanded study each group is capped until "Show all" is clicked.
+    _STUDY_CAP = 400          # study header rows are cheap
+    _GROUP_CAP = 40           # findings shown per group before "Show all"
+
     def _render(self) -> None:
         for w in self.results.winfo_children():
             w.destroy()
@@ -307,7 +325,8 @@ class PixelScanView(View):
         n_pass = sum(1 for s in studies if s.status == pixelscan.STATUS_PASS)
         self.summary.configure(
             text=f"{len(studies)} studies — {n_rev} need review · {n_cor} "
-            f"corrected · {n_pass} pass. Report saved locally (PHI).",
+            f"corrected · {n_pass} pass.  Click a study to expand. "
+            f"Report saved locally (PHI).",
             text_color=(_STATUS_COLOR[pixelscan.STATUS_REVIEW] if n_rev
                         else _STATUS_COLOR[pixelscan.STATUS_CORRECTED] if n_cor
                         else "#5cb85c"))
@@ -316,28 +335,39 @@ class PixelScanView(View):
         for st in studies:
             if want is not None and st.status != want:
                 continue
-            if shown > 500:
+            if shown >= self._STUDY_CAP:
                 ctk.CTkLabel(self.results, text="… more in the saved report.",
                              text_color=MUTED, anchor="w").grid(sticky="ew")
                 break
-            shown += self._render_study(st)
+            self._render_study_header(st)
+            shown += 1
         self._update_adj_counter()
 
-    def _render_study(self, st) -> int:
+    def _render_study_header(self, st) -> None:
         color = _STATUS_COLOR.get(st.status, MUTED)
-        # A divider before each study so the long list breaks into clear blocks.
-        ctk.CTkFrame(self.results, height=2, fg_color=("gray80", "gray30")).grid(
-            sticky="ew", padx=4, pady=(14, 4))
-        label = (f"[{st.status.upper()}]  Acc {st.accession or '—'}  ·  "
-                 f"{st.modalities or '?'}  ·  {st.n_series} series, "
-                 f"{st.n_instances} img  ·  {st.n_phi} PHI / {st.n_suspects} "
-                 f"review" + (f" · {st.n_redacted} redacted"
-                              if st.n_redacted else ""))
-        ctk.CTkLabel(self.results, text=label, anchor="w", justify="left",
-                     text_color=color, wraplength=820,
-                     font=ctk.CTkFont(size=13, weight="bold")).grid(
-            sticky="ew", padx=4, pady=(0, 2))
-        rows = 2
+        expanded = st.study_uid in self._expanded
+        label = (f"{'▾' if expanded else '▸'}  [{st.status.upper()}]  "
+                 f"Acc {st.accession or '—'}  ·  {st.modalities or '?'}  ·  "
+                 f"{st.n_series} series, {st.n_instances} img  ·  {st.n_phi} PHI"
+                 f" / {st.n_suspects} review"
+                 + (f" · {st.n_redacted} redacted" if st.n_redacted else ""))
+        ctk.CTkButton(
+            self.results, text=label, anchor="w", height=30,
+            fg_color=("gray85", "gray20"), hover_color=("gray78", "gray28"),
+            text_color=color, font=ctk.CTkFont(size=13, weight="bold"),
+            command=lambda s=st: self._toggle_study(s)).grid(
+            sticky="ew", padx=4, pady=(10, 0))
+        if expanded:
+            detail = ctk.CTkFrame(self.results, fg_color="transparent")
+            detail.grid(sticky="ew")
+            detail.grid_columnconfigure(0, weight=1)
+            self._build_study_detail(st, detail)
+
+    def _toggle_study(self, st) -> None:
+        self._expanded.symmetric_difference_update({st.study_uid})
+        self._render()
+
+    def _build_study_detail(self, st, parent) -> None:
         # Keep the actionable (suspect) findings visually apart from the ones
         # already matched/handled, so handled items don't read as "to review".
         review_series, handled_series = [], []
@@ -349,15 +379,14 @@ class PixelScanView(View):
                 review_series.append((se, suspects))
             if matched:
                 handled_series.append((se, matched))
-        rows += self._render_group(
-            st, "Needs review  —  click OK (not PHI) or PHI (confirmed) on "
-            "each item below", _STATUS_COLOR[pixelscan.STATUS_REVIEW],
+        self._render_group(
+            parent, st, "Needs review  —  click OK (not PHI) or PHI (confirmed) "
+            "on each item", _STATUS_COLOR[pixelscan.STATUS_REVIEW],
             review_series, review=True)
-        rows += self._render_group(
-            st, "Already matched — handled",
+        self._render_group(
+            parent, st, "Already matched — handled",
             _STATUS_COLOR[pixelscan.STATUS_CORRECTED], handled_series,
             review=False)
-        return rows
 
     @staticmethod
     def _series_findings(se):
@@ -479,17 +508,16 @@ class PixelScanView(View):
             self._manual.pop(inst.path, None)
         self._render()
 
-    def _render_group(self, st, title, color, series_items, review) -> int:
-        """Render one labeled group (needs-review or handled) within a study."""
+    def _render_group(self, parent, st, title, color, series_items,
+                      review) -> None:
+        """Render one labeled group (needs-review or handled) into ``parent``."""
         if not series_items:
-            return 0
-        ctk.CTkLabel(self.results, text=f"   {title}", anchor="w",
-                     text_color=color,
+            return
+        ctk.CTkLabel(parent, text=f"   {title}", anchor="w", text_color=color,
                      font=ctk.CTkFont(size=12, weight="bold")).grid(
             sticky="ew", padx=4, pady=(4, 0))
-        rows = 1
         for se, findings in series_items:
-            srow = ctk.CTkFrame(self.results, fg_color="transparent")
+            srow = ctk.CTkFrame(parent, fg_color="transparent")
             srow.grid(sticky="ew", padx=4)
             srow.grid_columnconfigure(0, weight=1)
             ctk.CTkLabel(
@@ -501,33 +529,44 @@ class PixelScanView(View):
                               padx=(8, 0))
             self._edit_button(srow, se, row=0, column=2, sticky="e",
                               padx=(8, 0))
-            rows += 1
-            for f in findings:
+            skey = (st.study_uid, se.series_uid, review)
+            capped = (findings if skey in self._show_all
+                      else findings[:self._GROUP_CAP])
+            for f in capped:
                 cat_label = ("redacted" if f.get("cleaned")
                              else _CAT_LABEL.get(f["category"]))
                 text = (f"         [{cat_label}] "
                         f"“{f['text']}” ({f['conf']:.0f}%)")
                 if review:
-                    self._render_review_row(st, se, f, text)
+                    self._render_review_row(parent, st, se, f, text)
                 else:
                     ctk.CTkLabel(
-                        self.results, anchor="w", justify="left", text=text,
+                        parent, anchor="w", justify="left", text=text,
                         text_color=_STATUS_COLOR[pixelscan.STATUS_CORRECTED]
                     ).grid(sticky="ew", padx=4)
-                rows += 1
-        return rows
+            extra = len(findings) - len(capped)
+            if extra > 0:
+                ctk.CTkButton(
+                    parent, anchor="w", height=24, fg_color="gray35",
+                    text=f"         Show all {len(findings)} (+{extra} more)",
+                    command=lambda k=skey: self._show_all_group(k)).grid(
+                    sticky="ew", padx=4, pady=(0, 2))
+
+    def _show_all_group(self, skey) -> None:
+        self._show_all.add(skey)
+        self._render()
 
     @staticmethod
     def _adj_color(decision):
         return {"ok": _ADJ_OK, "phi": _ADJ_PHI}.get(decision, _ADJ_UNDECIDED)
 
-    def _render_review_row(self, st, se, finding, text) -> None:
+    def _render_review_row(self, parent, st, se, finding, text) -> None:
         akey = pixelscan.adjudication_key(
             st.study_uid, se.series_uid, "suspect", finding["text"])
         decision = self._adjudications.get(akey)
         # Each adjudicatable item is its own card, so it stands out from the
         # header/handled lines and is easy to find in a long list.
-        row = ctk.CTkFrame(self.results, fg_color=("gray92", "gray17"),
+        row = ctk.CTkFrame(parent, fg_color=("gray92", "gray17"),
                            corner_radius=6)
         row.grid(sticky="ew", padx=10, pady=3)
         row.grid_columnconfigure(0, weight=1)

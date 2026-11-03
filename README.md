@@ -70,8 +70,10 @@ De-ID keeps the same engine and rebuilds the experience around focused views.
   "suspects" (date / long-number / name-like text not in the metadata) are flagged
   for a human. In review you can also **draw redaction boxes**, blank a **whole
   image**, or **exclude an object** — a manual fallback for burned-in PHI too
-  faint for OCR to read (e.g. gray-on-gray electronic face sheets). Overview +
-  per-finding CSV reports are written to a local, secure folder.
+  faint for OCR to read (e.g. gray-on-gray electronic face sheets). The results
+  list is collapsible — studies start collapsed and expand on click — so large
+  reports stay responsive. Overview + per-finding CSV reports are written to a
+  local, secure folder.
 - **Receive → anonymize → export queue** — a C-STORE inbox / watch-folder that
   de-identifies incoming studies against the active project and forwards them to a
   research PACS/VNA.
