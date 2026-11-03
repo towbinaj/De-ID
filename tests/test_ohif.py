@@ -60,6 +60,13 @@ def test_prepare_unified_and_goto(tmp_path, monkeypatch):
         ohif.shutdown()
 
 
+def test_viewer_alive_does_not_raise():
+    # Regression: viewer_alive() used time.time() but time wasn't imported at
+    # module level, so every View click raised NameError.
+    ohif.shutdown()
+    assert ohif.viewer_alive() is False      # no window / no server
+
+
 def test_goto_without_prepare_returns_false():
     ohif.shutdown()                      # ensure a fresh server, nothing prepared
     try:
