@@ -88,6 +88,7 @@ def test_is_suspect_catches_all_caps_names():
     s = ocr._is_suspect
     assert s("SMITH") and s("O'BRIEN") and s("DOE")    # ALL-CAPS names
     assert s("Smith") and s("Doe")                     # Title-case names
+    assert s("Doe,") and s("SMITH:")                   # trailing punctuation
     assert s("1234567")                                # long number
     # not PHI: anatomy / view / scan-control labels and short codes
     for w in ("ABDOMEN", "CORONAL", "NEONATAL", "HEAD", "GEN", "DYN", "OFF",

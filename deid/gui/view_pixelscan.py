@@ -49,6 +49,7 @@ class PixelScanView(View):
         self._scanning = False
         self._viewer_started = False     # the persistent OHIF window is open
         self._viewer_dirty = False       # output changed; rebuild the manifest
+        self._viewer_opened_at = 0.0     # grace window while a viewer loads
         try:
             from .. import ohif
             self._ohif_ok = ohif.available()
@@ -392,13 +393,19 @@ class PixelScanView(View):
         existing window refreshes to the corrected images instead of showing a
         stale copy, and without opening a second window.
         """
+        import time
         from .. import ohif
         try:
-            if not self._viewer_started or self._viewer_dirty:
+            # Treat a just-opened window as alive while it loads (avoids a second
+            # window on a quick re-click); otherwise reopen if it was closed.
+            grace = (time.time() - self._viewer_opened_at) < 6
+            alive = ohif.viewer_alive() or grace
+            if not alive or self._viewer_dirty:
                 shell, _m = ohif.prepare_unified(self._viewer_files())
-                if not self._viewer_started:
+                if not alive:
                     ohif.open_window(shell)
-                    self._viewer_started = True
+                    self._viewer_opened_at = time.time()
+                self._viewer_started = True
                 self._viewer_dirty = False
             ohif.goto(study_uid, series_uid)
         except Exception as exc:  # noqa: BLE001

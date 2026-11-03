@@ -285,13 +285,13 @@ def _is_suspect(text: str) -> bool:
         return True
     if up.isdigit() and len(up) >= 6:           # long bare number (MRN/acc-like)
         return True
-    if _NAME_RE.match(t):                       # Title-case word (e.g. "Smith")
-        return True
-    # ALL-CAPS alphabetic word (e.g. "SMITH", "O'BRIEN") that is not a known
-    # scan/anatomy label -> likely a burned-in name.
+    # Name checks run on the alphabetic core so trailing punctuation does not
+    # hide a name - e.g. "Doe," ("Lastname, Firstname") or "SMITH:".
     alpha = _ALPHA_RE.sub("", t)
-    if (3 <= len(alpha) <= 20 and alpha.isupper()
-            and up not in _SCAN_TERMS and up not in _COMMON_LABELS):
+    if _NAME_RE.match(alpha):                   # Title-case word (e.g. "Smith")
+        return True
+    if (3 <= len(alpha) <= 20 and alpha.isupper()   # ALL-CAPS name ("O'BRIEN")
+            and up not in _COMMON_LABELS):
         return True
     return False
 

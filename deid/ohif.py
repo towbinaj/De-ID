@@ -403,7 +403,9 @@ class _Handler(SimpleHTTPRequestHandler):
             # viewer whenever the report selects a different image.
             return self._send_bytes(_SHELL_HTML.encode(), "text/html")
         if path == "/deid/control":
-            # Short-poll: current navigation target for the open window.
+            # Short-poll: current navigation target for the open window. The poll
+            # itself is the window's heartbeat (used to tell if it was closed).
+            srv.last_poll = time.time()
             body = json.dumps({"seq": srv.target_seq,
                                "url": srv.target_url}).encode()
             return self._send_bytes(body, "application/json")
@@ -456,6 +458,7 @@ class _ViewerHTTPServer(ThreadingHTTPServer):
         self.unified_tokens: list[str] = []
         self.target_seq: int = 0
         self.target_url: str = ""
+        self.last_poll: float = 0.0          # when the open window last polled
 
     def handle_error(self, request, client_address) -> None:
         # The viewer routinely cancels image downloads it no longer needs
@@ -587,6 +590,13 @@ def goto(study_uid: str, series_uid: str = "") -> bool:
 
 
 # -- window --------------------------------------------------------------
+
+def viewer_alive(poll_window: float = 4.0) -> bool:
+    """True if a viewer window is open - i.e. it polled the control endpoint
+    within ``poll_window`` seconds. Lets the caller reopen a closed window."""
+    srv = _server
+    return srv is not None and (time.time() - srv.last_poll) < poll_window
+
 
 def open_window(url: str) -> None:
     """Open ``url`` in a normal browser window via the OS default handler.
