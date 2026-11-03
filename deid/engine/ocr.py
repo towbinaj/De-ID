@@ -270,6 +270,14 @@ def _write_back(ds, arr, ts) -> bool:
             ds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
             ds["PixelData"].VR = "OW" if int(
                 getattr(ds, "BitsAllocated", 16)) > 8 else "OB"
+        # pydicom's pixel_array converts any YBR colour (compressed JPEG cines or
+        # uncompressed YBR_FULL/422) to interleaved RGB, so the stored bytes are
+        # now RGB. Relabel them, or a DICOM viewer renders the output green.
+        pi = str(getattr(ds, "PhotometricInterpretation", "")).upper()
+        if arr.ndim >= 3 and arr.shape[-1] == 3 and pi.startswith("YBR"):
+            ds.PhotometricInterpretation = "RGB"
+            ds.PlanarConfiguration = 0
+            ds.SamplesPerPixel = 3
         return True
     except Exception as exc:  # noqa: BLE001
         log.warning("OCR write-back failed: %s", exc)

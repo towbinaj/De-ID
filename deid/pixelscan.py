@@ -32,8 +32,8 @@ from typing import Callable
 
 from pydicom import dcmread
 
-from . import paths
-from .engine import ocr, phimatch
+from . import paths, imagefile
+from .engine import ocr, phimatch, fileops
 from .logging_setup import get_logger
 from .project import _slug
 
@@ -206,6 +206,29 @@ def _corrected_dest(src: Path, out: Path, base: Path | None) -> Path:
     return out / rel
 
 
+def _scan_image(f: Path, min_confidence: float, on_item, i: int,
+                total: int) -> "InstanceReport | None":
+    """OCR a plain image file. All detected text is a suspect (no metadata to
+    match), grouped as a synthetic study/series keyed by its folder."""
+    try:
+        gray = imagefile.load_gray(f)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Pixel scan: cannot read image %s: %s", f.name, exc)
+        if on_item:
+            on_item(i, total, f, -1)
+        return None
+    findings = ocr.classify_words(ocr._ocr_words(gray, min_confidence),
+                                  phimatch.PhiSet())
+    inst = InstanceReport(
+        path=str(f), sop=f.name, study_uid=f"image:{f.parent}",
+        series_uid=f"image:{f.parent}", series_number="",
+        series_desc=f"(image) {f.parent.name}", modality="IMG",
+        accession="", patient_id="", findings=findings, redacted=0, out_path="")
+    if on_item:
+        on_item(i, total, f, len(findings))
+    return inst
+
+
 def scan_studies(files, *, redact: bool = False, out_dir=None,
                  min_confidence: float = 0.4, modalities=None,
                  should_cancel: Callable[[], bool] | None = None,
@@ -235,6 +258,13 @@ def scan_studies(files, *, redact: bool = False, out_dir=None,
         if should_cancel and should_cancel():
             break
         f = Path(f)
+        # Plain image files (JPEG/PNG) have no metadata to match: OCR them and
+        # flag everything as a suspect for the user to adjudicate + Clean.
+        if imagefile.is_image(f) and not fileops.looks_like_dicom(f):
+            inst = _scan_image(f, min_confidence, on_item, i, total)
+            if inst is not None:
+                instances.append(inst)
+            continue
         try:
             ds = dcmread(str(f), force=True)
         except Exception as exc:  # noqa: BLE001
@@ -314,8 +344,14 @@ def redact_adjudicated(studies: list[StudyReport], adjudications: dict,
                 src = Path(inst.out_path or inst.path)
                 dest = _corrected_dest(Path(inst.path), out, base)
                 try:
-                    ds = dcmread(str(src), force=True)
-                    n = ocr.redact_boxes(ds, boxes)
+                    if imagefile.is_image(inst.path):
+                        n = imagefile.redact(src, boxes, dest)   # reads + writes
+                    else:
+                        ds = dcmread(str(src), force=True)
+                        n = ocr.redact_boxes(ds, boxes)
+                        if n:
+                            dest.parent.mkdir(parents=True, exist_ok=True)
+                            ds.save_as(str(dest), enforce_file_format=True)
                     if not n:
                         summary["failed"] += 1
                         summary["failures"].append(
@@ -323,8 +359,6 @@ def redact_adjudicated(studies: list[StudyReport], adjudications: dict,
                         log.warning("Clean: pixels not decodable for %s",
                                     src.name)
                         continue
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    ds.save_as(str(dest), enforce_file_format=True)
                     inst.out_path = str(dest)
                     inst.redacted += n
                     for f in inst.findings:

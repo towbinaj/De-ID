@@ -13,7 +13,7 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from .. import paths, pixelscan
+from .. import paths, pixelscan, imagefile
 from ..engine import fileops, ocr
 from .base import View
 from .theme import MUTED
@@ -231,18 +231,17 @@ class PixelScanView(View):
             conf = max(0.0, min(1.0, float(self.conf.get() or "0.4")))
         except ValueError:
             conf = 0.4
-        # Drop non-DICOM files (e.g. JPEG/PNG added via "All files"): De-ID can't
-        # read or redact their pixels, so OCR would miss burned-in text and
-        # redaction would fail silently. Warn so PHI files aren't overlooked.
-        files = [f for f in self.files if fileops.looks_like_dicom(f)]
+        # Keep DICOM and plain image files (JPEG/PNG); skip anything else so an
+        # unrelated file isn't mistaken for de-identified.
+        files = [f for f in self.files
+                 if fileops.looks_like_dicom(f) or imagefile.is_image(f)]
         skipped = len(self.files) - len(files)
         if skipped:
             messagebox.showwarning(
-                "Non-DICOM files skipped",
-                f"{skipped} selected file(s) are not DICOM images (e.g. JPEG) "
-                "and will be skipped — De-ID cannot read or redact their pixels.\n\n"
-                "If they contain PHI, remove or de-identify them separately; "
-                "they are NOT in the output.", parent=self)
+                "Unsupported files skipped",
+                f"{skipped} selected file(s) are neither DICOM nor supported "
+                "images and were skipped — they are NOT in the output. If they "
+                "contain PHI, handle them separately.", parent=self)
         if not files:
             self._scanning = False
             self.scan_btn.configure(state="normal")
@@ -379,6 +378,8 @@ class PixelScanView(View):
         for st in self._studies:
             for se in st.series:
                 for inst in se.instances:
+                    if imagefile.is_image(inst.path):
+                        continue          # OHIF is DICOM-only
                     p = inst.out_path or inst.path
                     if p:
                         files.append(Path(p))
@@ -406,12 +407,28 @@ class PixelScanView(View):
                 parent=self)
 
     def _view_button(self, parent, st, se, **grid):
+        # Image files open in the OS image viewer (OHIF is DICOM-only).
+        if se.instances and imagefile.is_image(se.instances[0].path):
+            inst = se.instances[0]
+            ctk.CTkButton(
+                parent, text="View", width=52, height=24, fg_color="gray40",
+                command=lambda p=(inst.out_path or inst.path):
+                self._open_image(p)).grid(**grid)
+            return
         if not self._ohif_ok:
             return
         ctk.CTkButton(
             parent, text="View", width=52, height=24, fg_color="gray40",
             command=lambda s=st.study_uid, u=se.series_uid:
             self._view_in_ohif(s, u)).grid(**grid)
+
+    def _open_image(self, path) -> None:
+        import os
+        try:
+            os.startfile(path)        # default image viewer (shows the output)
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Viewer", f"Could not open the image:\n{exc}",
+                                 parent=self)
 
     def _render_group(self, st, title, color, series_items, review) -> int:
         """Render one labeled group (needs-review or handled) within a study."""
@@ -467,7 +484,8 @@ class PixelScanView(View):
                            text_color=self._adj_color(decision))
         lbl.grid(row=0, column=0, sticky="ew", padx=(12, 4), pady=7)
         col = 1
-        if self._ohif_ok:
+        is_img = bool(se.instances) and imagefile.is_image(se.instances[0].path)
+        if self._ohif_ok or is_img:
             self._view_button(row, st, se, row=0, column=col, sticky="e",
                               padx=4, pady=7)
             col += 1

@@ -119,6 +119,41 @@ def test_upscaling_catches_small_text_and_boxes_are_exact():
     assert out[y0:y1 + 1, x0:x1 + 1].max() == 0   # text region exactly blanked
 
 
+def test_write_back_relabels_ybr_color_as_rgb():
+    import numpy as np
+    from pydicom.dataset import Dataset, FileMetaDataset
+    from pydicom.uid import ExplicitVRLittleEndian
+    ds = Dataset()
+    ds.BitsAllocated = 8
+    ds.SamplesPerPixel = 3
+    ds.PhotometricInterpretation = "YBR_FULL_422"
+    ds.PlanarConfiguration = 1
+    fm = FileMetaDataset()
+    fm.TransferSyntaxUID = ExplicitVRLittleEndian
+    ds.file_meta = fm
+    arr = np.zeros((4, 4, 3), dtype=np.uint8)
+    # pixel_array gives RGB for YBR, so the write-back must relabel (prevents the
+    # green output in a DICOM viewer) even though it was not compressed.
+    assert ocr._write_back(ds, arr, ExplicitVRLittleEndian) is True
+    assert ds.PhotometricInterpretation == "RGB"
+    assert ds.PlanarConfiguration == 0 and ds.SamplesPerPixel == 3
+
+
+def test_write_back_leaves_grayscale_photometric():
+    import numpy as np
+    from pydicom.dataset import Dataset, FileMetaDataset
+    from pydicom.uid import ExplicitVRLittleEndian
+    ds = Dataset()
+    ds.BitsAllocated = 16
+    ds.PhotometricInterpretation = "MONOCHROME2"
+    fm = FileMetaDataset()
+    fm.TransferSyntaxUID = ExplicitVRLittleEndian
+    ds.file_meta = fm
+    arr = np.zeros((4, 4), dtype=np.uint16)
+    assert ocr._write_back(ds, arr, ExplicitVRLittleEndian) is True
+    assert ds.PhotometricInterpretation == "MONOCHROME2"   # unchanged
+
+
 def test_processor_skips_ocr_when_disabled(monkeypatch):
     calls = {"n": 0}
     monkeypatch.setattr(ocr, "redact_burned_in_text",
