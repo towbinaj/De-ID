@@ -114,30 +114,27 @@ def _ocr_scale(width: int, height: int) -> float:
     return max(1.0, min(_OCR_TARGET_MIN / small, _OCR_MAX_SCALE))
 
 
-def _ocr_words(frame: np.ndarray, min_conf: float) -> list[dict]:
-    """OCR one frame → word dicts: {text, conf, box:(y0,y1,x0,x1), line}.
+def _highpass(img):
+    """Local-contrast image: subtract a large-radius blur (the local grey
+    background) so low-contrast UI text on a panel stands out, then stretch.
+    This is what lets OCR read gray-on-gray electronic face sheets."""
+    from PIL import Image, ImageFilter, ImageOps
+    r = max(6, round(min(img.size) / 14))
+    blur = img.filter(ImageFilter.GaussianBlur(radius=r))
+    hp = (np.asarray(img).astype(np.int16)
+          - np.asarray(blur).astype(np.int16) + 128)
+    hp = np.clip(hp, 0, 255).astype(np.uint8)
+    return ImageOps.autocontrast(Image.fromarray(hp), cutoff=1)
 
-    The frame is converted to grayscale and upscaled (small text is otherwise
-    missed); detected boxes are scaled back to the frame's own coordinates.
-    ``line`` is a (block, paragraph, line) key so the caller can regroup words
-    into lines for multi-word (name / spelled-date) matching.
-    """
-    exe = tesseract_path()
-    if not exe:
-        return []
-    from PIL import Image
-    img = Image.fromarray(_to_uint8(frame))
-    if img.mode != "L":                  # text detection is more robust in gray
-        img = img.convert("L")
-    scale = _ocr_scale(img.width, img.height)
-    if scale > 1.0:
-        img = img.resize((round(img.width * scale), round(img.height * scale)),
-                         Image.LANCZOS)
+
+def _tsv_words(exe, img, min_conf: float, scale: float) -> list[dict]:
+    """Run Tesseract on one prepared image and parse its TSV to word dicts,
+    mapping boxes back to the original (pre-upscale) coordinates."""
     with tempfile.TemporaryDirectory() as td:
         png = os.path.join(td, "frame.png")
         img.save(png)
         tsv = _run_tsv(exe, png)
-    words: list[dict] = []
+    out: list[dict] = []
     for row in csv.DictReader(io.StringIO(tsv), delimiter="\t"):
         try:
             text = (row.get("text") or "").strip()
@@ -152,14 +149,48 @@ def _ocr_words(frame: np.ndarray, min_conf: float) -> list[dict]:
                 y1 = int(np.ceil((top + h) / scale))
             else:
                 x0, y0, x1, y1 = left, top, left + w, top + h
-            words.append({
-                "text": text, "conf": conf,
-                "box": (y0, y1, x0, x1),
+            out.append({
+                "text": text, "conf": conf, "box": (y0, y1, x0, x1),
                 "line": (row.get("block_num"), row.get("par_num"),
-                         row.get("line_num")),
-            })
+                         row.get("line_num"))})
         except (ValueError, KeyError, TypeError):
             continue
+    return out
+
+
+def _ocr_words(frame: np.ndarray, min_conf: float) -> list[dict]:
+    """OCR one frame → word dicts: {text, conf, box:(y0,y1,x0,x1), line}.
+
+    Runs two passes - the upscaled grayscale frame and a local-contrast
+    (high-pass) version - and merges the words, so low-contrast text (gray
+    electronic face sheets) is caught without losing the plain detections.
+    Boxes are in the frame's own coordinates.
+    """
+    exe = tesseract_path()
+    if not exe:
+        return []
+    from PIL import Image
+    base = Image.fromarray(_to_uint8(frame))
+    if base.mode != "L":                 # text detection is more robust in gray
+        base = base.convert("L")
+    scale = _ocr_scale(base.width, base.height)
+
+    def prep(im):
+        if scale > 1.0:
+            im = im.resize((round(im.width * scale), round(im.height * scale)),
+                           Image.LANCZOS)
+        return im
+
+    words: list[dict] = []
+    seen: set = set()
+    for img in (prep(base), prep(_highpass(base))):
+        for w in _tsv_words(exe, img, min_conf, scale):
+            # dedupe the same word found in both passes (coarse position key).
+            key = (w["text"].upper(), w["box"][0] // 24, w["box"][2] // 24)
+            if key in seen:
+                continue
+            seen.add(key)
+            words.append(w)
     return words
 
 
