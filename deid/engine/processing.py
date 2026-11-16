@@ -36,6 +36,26 @@ BASELINE = date(1900, 1, 1)
 _DATE_TAGS = ["StudyDate", "SeriesDate", "AcquisitionDate", "ContentDate"]
 DATE_MODES = ["remove", "keep", "baseline", "jitter", "round"]
 
+# A clean DICOM preamble is 128 zero bytes. A non-zero preamble can smuggle a
+# valid PE/MZ executable header (CVE-2019-11687, "PE/DICOM polyglot"): the file
+# is at once a valid DICOM object and a runnable Windows executable, so a
+# "sanitized" copy could still carry malware. De-identification exists to make
+# objects safe to share, so every object we write gets a zeroed preamble.
+_ZERO_PREAMBLE = b"\x00" * 128
+
+
+def neutralize_preamble(ds: Dataset) -> bool:
+    """Replace the 128-byte DICOM preamble with zeros (CVE-2019-11687 defense).
+
+    Returns ``True`` when the preamble was present and non-zero (i.e. carried a
+    payload we just removed), so callers can flag the input. Safe on any
+    dataset: a missing or already-zero preamble is left as a clean zero block.
+    """
+    current = getattr(ds, "preamble", None)
+    had_payload = bool(current) and any(current)
+    ds.preamble = _ZERO_PREAMBLE
+    return had_payload
+
 
 def _round_date(d: date, how: str) -> date:
     """Coarsen a date: 'month' -> first of the month, else first of the year."""
@@ -274,6 +294,9 @@ class Processor:
         self._apply_pixel_blanking(ds)
         if self.cfg.ocr_enabled:
             self._apply_ocr(ds, ocr_phi)
+        if neutralize_preamble(ds):
+            log.warning("Zeroed a non-empty DICOM preamble on a de-identified "
+                        "object (possible PE/DICOM polyglot, CVE-2019-11687).")
         return ds
 
     def _apply_ocr(self, ds: Dataset, phi=None) -> None:

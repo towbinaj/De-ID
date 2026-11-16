@@ -60,6 +60,33 @@ def test_deidentify_files_writes_and_anonymizes(tmp_path):
     assert len(studies) == 1          # one remapped StudyInstanceUID for all
 
 
+def test_deidentify_zeros_polyglot_preamble_on_disk(tmp_path):
+    """A PE/DICOM polyglot (CVE-2019-11687): the de-identified file written to
+    the shareable output must have a zeroed 128-byte preamble."""
+    src = tmp_path / "in"
+    src.mkdir()
+    study = generate_uid()
+    ds = make_ct(StudyInstanceUID=study, PatientName="DOE^JANE", PatientID="MRN42")
+    ds.preamble = b"MZ\x90\x00" + b"\x00" * 124      # planted DOS/PE stub
+    save(ds, src / "polyglot.dcm")
+    # confirm the input really carries the payload we're defending against
+    with open(src / "polyglot.dcm", "rb") as fh:
+        assert fh.read(2) == b"MZ"
+
+    out = tmp_path / "out"
+    cfg = Project(name="t", basic_profile=True).to_receiver_config()
+    fileproc.deidentify_files(fileops.find_dicom_files(src), out, cfg,
+                              on_item=lambda *a: None)
+
+    written = list(out.rglob("*.dcm"))
+    assert len(written) == 1
+    ds_out = dcmread(str(written[0]))
+    assert ds_out.preamble == b"\x00" * 128
+    # and the raw bytes on disk no longer start with the PE magic
+    with open(written[0], "rb") as fh:
+        assert fh.read(132) == b"\x00" * 128 + b"DICM"
+
+
 def test_out_relpath_groups_by_deidentified_ids():
     ds = make_ct(PatientID="ID-000007", StudyInstanceUID="1.2.3",
                  SeriesInstanceUID="1.2.3.4", sop_instance="1.2.3.4.5")

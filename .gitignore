@@ -13,6 +13,12 @@ De-ID-data/
 *.log
 
 # ---------------------------------------------------------------------------
+# Security assessment output -- local only. May reference real paths, hosts,
+# dependency/CVE details and findings; never commit to the public repo.
+# ---------------------------------------------------------------------------
+Assessment/
+
+# ---------------------------------------------------------------------------
 # Python / build artifacts
 # ---------------------------------------------------------------------------
 .venv/

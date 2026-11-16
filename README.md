@@ -76,7 +76,12 @@ De-ID keeps the same engine and rebuilds the experience around focused views.
   local, secure folder.
 - **Receive → anonymize → export queue** — a C-STORE inbox / watch-folder that
   de-identifies incoming studies against the active project and forwards them to a
-  research PACS/VNA.
+  research PACS/VNA. The inbox listens on **loopback only** (`127.0.0.1`) by
+  default so it isn't reachable from other machines; widen the bind address and
+  set an **allowed calling-AE list** in Settings when you intend to receive from
+  another host. Outgoing TLS **verifies the peer certificate** by default, with
+  optional hostname checking and certificate **pinning** (point a destination at
+  the peer's own certificate) per destination.
 - **Portable destinations** — export your export destinations to a CSV or JSON
   file and import them back (Settings → Export… / Import file…). The CSV matches
   the DICOM Toolkit's, so the two apps can share a destination list; handy for
@@ -120,4 +125,10 @@ To bundle the Tesseract OCR engine into the build, run
 
 ## License
 
-TBD.
+Released under the [MIT License](LICENSE).
+
+Note on redistribution: the packaged Windows build bundles third-party
+components under their own licenses, including GPL/copyleft ones (the PyInstaller
+bootloader, which carries a linking exception, and `pylibjpeg-libjpeg`). The MIT
+license covers De-ID's own source; bundling and distributing the built app must
+still honor those components' terms.

@@ -35,6 +35,10 @@ class Node:
     timeout: int = 30
     tls: bool = False
     calling_aetitle: str = ""     # local AE override for this node (else My AE)
+    # TLS peer authentication (only meaningful when ``tls`` is True).
+    tls_verify: bool = True            # verify the peer certificate chain
+    tls_verify_hostname: bool = False  # also require the cert to match the host
+    tls_ca_file: str = ""              # CA bundle, or the peer cert to pin
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -50,6 +54,9 @@ class Node:
             timeout=int(d.get("timeout", 30) or 30),
             tls=bool(d.get("tls", False)),
             calling_aetitle=str(d.get("calling_aetitle", "")).strip(),
+            tls_verify=bool(d.get("tls_verify", True)),
+            tls_verify_hostname=bool(d.get("tls_verify_hostname", False)),
+            tls_ca_file=str(d.get("tls_ca_file", "")).strip(),
         )
 
     def calling(self, default: str) -> str:

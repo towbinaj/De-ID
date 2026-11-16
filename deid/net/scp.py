@@ -41,12 +41,19 @@ class InboxSCP:
 
     def __init__(self, aetitle: str, port: int, inbox_dir, *,
                  on_receive: Callable[[Path], None] | None = None,
-                 ssl_context=None):
+                 ssl_context=None, bind_host: str = "127.0.0.1",
+                 allowed_aets=None):
         self.aetitle = aetitle
         self.port = int(port)
         self.inbox_dir = Path(inbox_dir)
         self.on_receive = on_receive
         self.ssl_context = ssl_context
+        # Bind loopback by default so the inbox is not reachable from other
+        # machines unless the operator opts in (set "0.0.0.0" for all
+        # interfaces). ``allowed_aets`` restricts which calling AE titles may
+        # associate; empty/None accepts any peer.
+        self.bind_host = str(bind_host or "127.0.0.1").strip()
+        self.allowed_aets = [a.strip() for a in (allowed_aets or []) if a.strip()]
         self.stats = ReceiverStats(port=self.port, aetitle=aetitle)
         self._server = None
         self._lock = threading.Lock()
@@ -54,18 +61,27 @@ class InboxSCP:
     def start(self) -> None:
         self.inbox_dir.mkdir(parents=True, exist_ok=True)
         ae = AE(ae_title=self.aetitle)
+        if self.allowed_aets:
+            # Only these calling AE titles may open an association.
+            ae.require_calling_aet = list(self.allowed_aets)
         ae.add_supported_context(Verification)
         for cx in AllStoragePresentationContexts:
             ae.add_supported_context(cx.abstract_syntax)
         handlers = [(evt.EVT_C_STORE, self._handle_store),
                     (evt.EVT_C_ECHO, lambda e: 0x0000)]
+        if self.bind_host not in ("127.0.0.1", "::1", "localhost") \
+                and not self.allowed_aets:
+            log.warning("Inbox SCP binding %s with no calling-AE allowlist - "
+                        "any peer that can reach port %d may send objects.",
+                        self.bind_host, self.port)
         self._server = ae.start_server(
-            ("0.0.0.0", self.port), block=False, evt_handlers=handlers,
+            (self.bind_host, self.port), block=False, evt_handlers=handlers,
             ssl_context=self.ssl_context)
         self.stats.listening = True
         self.stats.started_at = time.time()
-        log.info("Inbox SCP listening on port %d as %s", self.port,
-                 self.aetitle)
+        log.info("Inbox SCP listening on %s:%d as %s (allowlist: %s)",
+                 self.bind_host, self.port, self.aetitle,
+                 ", ".join(self.allowed_aets) if self.allowed_aets else "any")
 
     def stop(self) -> None:
         if self._server is not None:

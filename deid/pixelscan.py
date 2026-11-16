@@ -34,6 +34,7 @@ from pydicom import dcmread
 
 from . import paths, imagefile
 from .engine import ocr, phimatch, fileops
+from .engine.processing import neutralize_preamble
 from .logging_setup import get_logger
 from .project import _slug
 
@@ -282,6 +283,7 @@ def scan_studies(files, *, redact: bool = False, out_dir=None,
             dest = _corrected_dest(f, out, base)
             try:
                 dest.parent.mkdir(parents=True, exist_ok=True)
+                neutralize_preamble(ds)
                 ds.save_as(str(dest), enforce_file_format=True)
                 out_path = str(dest)
             except Exception as exc:  # noqa: BLE001
@@ -376,6 +378,7 @@ def redact_adjudicated(studies: list[StudyReport], adjudications: dict,
                         n = ocr.redact_boxes(ds, boxes)
                         if n:
                             dest.parent.mkdir(parents=True, exist_ok=True)
+                            neutralize_preamble(ds)
                             ds.save_as(str(dest), enforce_file_format=True)
                     if not n:
                         summary["failed"] += 1

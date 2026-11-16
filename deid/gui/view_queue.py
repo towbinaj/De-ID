@@ -151,7 +151,9 @@ class QueueView(View):
                 inbox_dir=inbox,
                 output_dir=str(self.out_dir) if self.out_dir else "",
                 watch_dirs=watch, enable_scp=bool(self.scp_enabled.get()),
-                aetitle=s.receiver_aetitle, port=s.receiver_port)
+                aetitle=s.receiver_aetitle, port=s.receiver_port,
+                bind_host=s.receiver_bind_host,
+                allowed_aets=s.receiver_allowed_aets)
         except Exception as exc:  # noqa: BLE001
             self.feed.write(f"[ERROR] could not start: {exc}")
             self.controller = None

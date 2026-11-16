@@ -56,7 +56,8 @@ class QueueController:
 
     # -- lifecycle -------------------------------------------------------
     def start(self, *, inbox_dir, output_dir, watch_dirs=(), enable_scp=True,
-              aetitle="DEID_SCP", port=11112) -> None:
+              aetitle="DEID_SCP", port=11112, bind_host="127.0.0.1",
+              allowed_aets=None) -> None:
         if self.running:
             return
         self.inbox_dir = Path(inbox_dir)
@@ -68,7 +69,8 @@ class QueueController:
         self._stop.clear()
         if enable_scp:
             self.scp = InboxSCP(aetitle, port, self.inbox_dir,
-                                on_receive=self._enqueue)
+                                on_receive=self._enqueue,
+                                bind_host=bind_host, allowed_aets=allowed_aets)
             self.scp.start()
         self.running = True
         self._thread = threading.Thread(target=self._worker, daemon=True)
@@ -176,10 +178,8 @@ class QueueController:
         if node is None:
             self._emit("processed", "de-identified (no export destination)")
             return
-        tls_args = None
-        if getattr(node, "tls", False):
-            from .net.tls import client_context
-            tls_args = (client_context(verify=False), node.host)
+        from .net.tls import client_tls_args
+        tls_args = client_tls_args(node)
         try:
             sr = scu.c_store(self.settings.my_aetitle, node, written,
                              timeout=node.timeout, tls_args=tls_args)

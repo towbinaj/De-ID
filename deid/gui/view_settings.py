@@ -9,7 +9,7 @@ from __future__ import annotations
 import threading
 import time
 from pathlib import Path
-from tkinter import messagebox
+from tkinter import messagebox, filedialog
 
 import customtkinter as ctk
 
@@ -28,7 +28,7 @@ class NodeDialog(ctk.CTkToplevel):
         self.app = app
         self.on_save = on_save
         self.title("Destination")
-        self.geometry("420x360")
+        self.geometry("460x560")
         self.transient(app)
         self.grab_set()
         node = node or Node(name="", aetitle="", host="", port=104)
@@ -49,13 +49,40 @@ class NodeDialog(ctk.CTkToplevel):
         self.tls = ctk.CTkCheckBox(self, text="Use TLS")
         if node.tls:
             self.tls.select()
-        self.tls.pack(anchor="w", padx=PAD, pady=PAD)
+        self.tls.pack(anchor="w", padx=PAD, pady=(PAD, 2))
+        self.tls_verify = ctk.CTkCheckBox(
+            self, text="Verify peer certificate (recommended)")
+        if node.tls_verify:
+            self.tls_verify.select()
+        self.tls_verify.pack(anchor="w", padx=PAD * 2, pady=2)
+        self.tls_hostname = ctk.CTkCheckBox(
+            self, text="Also verify hostname matches certificate")
+        if node.tls_verify_hostname:
+            self.tls_hostname.select()
+        self.tls_hostname.pack(anchor="w", padx=PAD * 2, pady=2)
+        ctk.CTkLabel(self, text="CA / pinned certificate file (optional)",
+                     anchor="w").pack(anchor="w", padx=PAD * 2, pady=(6, 0))
+        carow = ctk.CTkFrame(self, fg_color="transparent")
+        carow.pack(fill="x", padx=PAD * 2)
+        self.tls_ca = ctk.CTkEntry(carow)
+        self.tls_ca.insert(0, node.tls_ca_file)
+        self.tls_ca.pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(carow, text="…", width=36, command=self._pick_ca).pack(
+            side="left", padx=(6, 0))
 
         bar = ctk.CTkFrame(self, fg_color="transparent")
         bar.pack(fill="x", padx=PAD, pady=PAD)
         ctk.CTkButton(bar, text="Save", command=self._save).pack(side="left")
         ctk.CTkButton(bar, text="Cancel", fg_color="gray40",
                       command=self.destroy).pack(side="left", padx=PAD)
+
+    def _pick_ca(self) -> None:
+        path = filedialog.askopenfilename(
+            parent=self, title="CA or pinned certificate (PEM)",
+            filetypes=[("Certificates", "*.pem *.crt *.cer"), ("All files", "*")])
+        if path:
+            self.tls_ca.delete(0, "end")
+            self.tls_ca.insert(0, path)
 
     def _save(self) -> None:
         g = {k: e.get().strip() for k, e in self._entries.items()}
@@ -65,7 +92,10 @@ class NodeDialog(ctk.CTkToplevel):
             port = 0
         node = Node(name=g["name"], aetitle=g["aetitle"], host=g["host"],
                     port=port, calling_aetitle=g["calling_aetitle"],
-                    tls=bool(self.tls.get()))
+                    tls=bool(self.tls.get()),
+                    tls_verify=bool(self.tls_verify.get()),
+                    tls_verify_hostname=bool(self.tls_hostname.get()),
+                    tls_ca_file=self.tls_ca.get().strip())
         problems = node.validate()
         if problems:
             messagebox.showerror("Destination", "\n".join(problems), parent=self)
@@ -127,11 +157,21 @@ class SettingsView(View):
         self.recv_port.insert(0, str(s.receiver_port))
         self.recv_port.bind("<FocusOut>", lambda _e: self._save_prefs())
         self._row(6, "Receiver port", self.recv_port)
+        self.recv_bind = ctk.CTkEntry(f, width=200)
+        self.recv_bind.insert(0, s.receiver_bind_host or "127.0.0.1")
+        self.recv_bind.bind("<FocusOut>", lambda _e: self._save_prefs())
+        self._row(7, "Bind address (127.0.0.1 = this machine only)",
+                  self.recv_bind)
+        self.recv_aets = ctk.CTkEntry(f, width=300)
+        self.recv_aets.insert(0, ", ".join(s.receiver_allowed_aets))
+        self.recv_aets.bind("<FocusOut>", lambda _e: self._save_prefs())
+        self._row(8, "Allowed calling AE titles (comma-sep; blank = any)",
+                  self.recv_aets)
 
     def _build_destinations(self) -> None:
         f = self.form
         hdr = ctk.CTkFrame(f, fg_color="transparent")
-        hdr.grid(row=7, column=0, columnspan=2, sticky="ew", padx=PAD,
+        hdr.grid(row=9, column=0, columnspan=2, sticky="ew", padx=PAD,
                  pady=(12, 2))
         ctk.CTkLabel(hdr, text="Export destinations (PACS / VNA)",
                      font=ctk.CTkFont(size=15, weight="bold")).pack(side="left")
@@ -142,7 +182,7 @@ class SettingsView(View):
                       command=self._add_dest).pack(side="right")
         # Import / export toolbar (CSV or JSON, Toolkit-compatible).
         bar = ctk.CTkFrame(f, fg_color="transparent")
-        bar.grid(row=8, column=0, columnspan=2, sticky="ew", padx=PAD,
+        bar.grid(row=10, column=0, columnspan=2, sticky="ew", padx=PAD,
                  pady=(0, 2))
         ctk.CTkButton(bar, text="Export…", width=90,
                       command=self._export).pack(side="left")
@@ -152,22 +192,22 @@ class SettingsView(View):
                       fg_color="gray40",
                       command=self._import_toolkit).pack(side="left")
         self.dest_list = ctk.CTkFrame(f, fg_color="transparent")
-        self.dest_list.grid(row=9, column=0, columnspan=2, sticky="ew",
+        self.dest_list.grid(row=11, column=0, columnspan=2, sticky="ew",
                             padx=PAD)
         self.dest_list.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(f, text=f"Stored locally in {paths.destinations_path()}",
                      text_color=MUTED, font=ctk.CTkFont(size=11),
-                     anchor="w").grid(row=10, column=0, columnspan=2,
+                     anchor="w").grid(row=12, column=0, columnspan=2,
                                       sticky="w", padx=PAD, pady=(4, 0))
         self._render_dests()
 
     def _build_about(self) -> None:
         from .. import __version__
         f = self.form
-        section(f, "About").grid(row=11, column=0, columnspan=2, sticky="w",
+        section(f, "About").grid(row=13, column=0, columnspan=2, sticky="w",
                                  padx=PAD, pady=(12, 4))
         row = ctk.CTkFrame(f, fg_color="transparent")
-        row.grid(row=12, column=0, columnspan=2, sticky="w", padx=PAD)
+        row.grid(row=14, column=0, columnspan=2, sticky="w", padx=PAD)
         ctk.CTkLabel(row, text=f"Version {__version__}").pack(side="left")
         ctk.CTkButton(
             row, text="Check for updates", width=150,
@@ -370,7 +410,7 @@ class SettingsView(View):
     def _check_all(self) -> None:
         """Ping every destination with C-ECHO; show status inline (no popups)."""
         from ..net import scu
-        from ..net.tls import client_context
+        from ..net.tls import client_tls_args
         nodes = list(self.app.destinations)
         if not nodes:
             return
@@ -392,9 +432,8 @@ class SettingsView(View):
 
             def work(n=node):
                 t0 = time.time()
-                tls = (client_context(verify=False), n.host) if n.tls else None
                 res = scu.c_echo(my_ae, n, timeout=min(n.timeout, 15),
-                                 tls_args=tls)
+                                 tls_args=client_tls_args(n))
                 return res, int((time.time() - t0) * 1000)
 
             def ok_cb(result, key=key):
@@ -431,4 +470,7 @@ class SettingsView(View):
             s.receiver_port = int(self.recv_port.get().strip() or "11112")
         except ValueError:
             pass
+        s.receiver_bind_host = self.recv_bind.get().strip() or "127.0.0.1"
+        s.receiver_allowed_aets = [a.strip() for a in
+                                   self.recv_aets.get().split(",") if a.strip()]
         s.save()

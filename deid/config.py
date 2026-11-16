@@ -20,6 +20,11 @@ class Settings:
     bug_report_email: str = ""
     receiver_aetitle: str = "DEID_SCP"
     receiver_port: int = 11112
+    # Bind loopback by default so the inbox is not reachable from other machines
+    # (set "0.0.0.0" to listen on all interfaces). ``receiver_allowed_aets``
+    # restricts which calling AE titles may associate; empty accepts any peer.
+    receiver_bind_host: str = "127.0.0.1"
+    receiver_allowed_aets: list = field(default_factory=list)
     active_project: str = ""
     # GUI state.
     appearance: str = "System"          # System | Light | Dark

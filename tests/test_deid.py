@@ -4,8 +4,38 @@ from __future__ import annotations
 
 from pydicom.uid import generate_uid
 
-from deid.engine.processing import ReceiverConfig, Processor
+from deid.engine.processing import (ReceiverConfig, Processor,
+                                     neutralize_preamble)
 from conftest import make_ct
+
+
+# A valid DICOM preamble is 128 zero bytes; a non-zero one can smuggle a PE/MZ
+# executable header (CVE-2019-11687 PE/DICOM polyglot). "MZ" is the DOS stub.
+_PE_PREAMBLE = b"MZ\x90\x00" + b"\x00" * 124
+
+
+def test_neutralize_preamble_zeros_pe_header():
+    ds = make_ct()
+    ds.preamble = _PE_PREAMBLE
+    assert len(_PE_PREAMBLE) == 128
+    changed = neutralize_preamble(ds)
+    assert changed is True                       # reported the payload removal
+    assert ds.preamble == b"\x00" * 128          # now a clean preamble
+
+
+def test_neutralize_preamble_noop_on_clean():
+    ds = make_ct()
+    ds.preamble = b"\x00" * 128
+    assert neutralize_preamble(ds) is False
+    assert ds.preamble == b"\x00" * 128
+
+
+def test_process_zeros_polyglot_preamble():
+    ds = _phi_ct(generate_uid())
+    ds.preamble = _PE_PREAMBLE
+    proc = Processor(ReceiverConfig(basic_profile=True))
+    proc.process(ds)
+    assert ds.preamble == b"\x00" * 128
 
 
 def _phi_ct(study):
