@@ -10,6 +10,24 @@ from deid.engine.processing import Processor
 from conftest import make_ct
 
 
+def test_pixel_region_fields_round_trip_and_map():
+    p = Project(name="t", pixel_regions_enabled=True,
+                pixel_regions_script="C:/lib/pix.script")
+    back = Project.from_dict(p.to_dict())
+    assert back.pixel_regions_enabled is True
+    assert back.pixel_regions_script == "C:/lib/pix.script"
+    cfg = p.to_receiver_config()
+    assert cfg.pixel_regions_enabled is True
+    assert cfg.pixel_regions_script == "C:/lib/pix.script"
+
+
+def test_legacy_project_json_defaults_regions_off():
+    p = Project.from_dict({"name": "legacy"})   # JSON without the new keys
+    assert p.pixel_regions_enabled is False
+    assert p.pixel_regions_script == ""
+    assert p.to_receiver_config().pixel_regions_enabled is False
+
+
 def test_project_round_trip(tmp_path, monkeypatch):
     monkeypatch.setenv("DEID_DATA", str(tmp_path))
     p = Project(name="Trial A", basic_profile=True, calculated_dates=True,

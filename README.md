@@ -70,10 +70,15 @@ De-ID keeps the same engine and rebuilds the experience around focused views.
   "suspects" (date / long-number / name-like text not in the metadata) are flagged
   for a human. In review you can also **draw redaction boxes**, blank a **whole
   image**, or **exclude an object** — a manual fallback for burned-in PHI too
-  faint for OCR to read (e.g. gray-on-gray electronic face sheets). The results
-  list is collapsible — studies start collapsed and expand on click — so large
-  reports stay responsive. Overview + per-finding CSV reports are written to a
-  local, secure folder.
+  faint for OCR to read (e.g. gray-on-gray electronic face sheets). An optional
+  **known-region pass** (CTP `DicomPixelAnonymizer` style) runs first: it blanks
+  fixed rectangles for known devices (CT dose reports, modality banners) using a
+  **bundled MIRC CTP library** — or your own CTP pixel script — deterministically
+  and without OCR, then OCR catches the rest. Results label what was **blanked by
+  rule** vs **by OCR**. The results list is collapsible — studies start collapsed
+  and expand on click — so large reports stay responsive. Overview + per-finding
+  CSV reports are written to a local, secure folder. The same known-region toggle
+  is available on a **Project** recipe (Rules view) so batch de-id uses it too.
 - **Receive → anonymize → export queue** — a C-STORE inbox / watch-folder that
   de-identifies incoming studies against the active project and forwards them to a
   research PACS/VNA. The inbox listens on **loopback only** (`127.0.0.1`) by
@@ -132,3 +137,9 @@ components under their own licenses, including GPL/copyleft ones (the PyInstalle
 bootloader, which carries a linking exception, and `pylibjpeg-libjpeg`). The MIT
 license covers De-ID's own source; bundling and distributing the built app must
 still honor those components' terms.
+
+The known-region pixel library at `deid/engine/recipes/DicomPixelAnonymizer.script`
+is the **MIRC CTP "Burned-in Annotation Library"** from RSNA
+([mircwiki.rsna.org](http://mircwiki.rsna.org/index.php?title=The_CTP_DICOM_Pixel_Anonymizer));
+it is third-party data redistributed with its original attribution header, not
+covered by De-ID's MIT license.

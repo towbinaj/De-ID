@@ -117,6 +117,11 @@ class ReceiverConfig:
     # 'all' blanks every text region; 'phi' blanks only text that matches this
     # study's own metadata (keeps scan parameters). See engine/phimatch.py.
     ocr_mode: str = "all"
+    # [PIXEL REGIONS] fast known-region (CTP DicomPixelAnonymizer-style) blanking,
+    # run as a first pass before OCR. Empty script path = bundled starter library.
+    # See engine/pixelregions.py.
+    pixel_regions_enabled: bool = False
+    pixel_regions_script: str = ""
 
 
 def _parse_tag(s: str) -> Tag:
@@ -157,6 +162,7 @@ class Processor:
         self._morph_format = self._load_morph_format()
         self._morph_table = self._load_morph_table()
         self._pseudo_tags = self._resolve_pseudo_tags()
+        self._region_rules = None   # lazily parsed known-region library
 
     def _resolve_pseudo_tags(self) -> list:
         """Resolve pseudonym tag specs (keyword or 8-hex) to (kind, Tag)."""
@@ -292,12 +298,37 @@ class Processor:
         if pseudo_plan:
             self._apply_pseudonym_plan(ds, pseudo_plan)
         self._apply_pixel_blanking(ds)
+        # Known-region blanking is a fast, deterministic first pass; OCR then
+        # catches burned-in text no device-specific rule knows about.
+        if self.cfg.pixel_regions_enabled:
+            self._apply_known_regions(ds)
         if self.cfg.ocr_enabled:
             self._apply_ocr(ds, ocr_phi)
         if neutralize_preamble(ds):
             log.warning("Zeroed a non-empty DICOM preamble on a de-identified "
                         "object (possible PE/DICOM polyglot, CVE-2019-11687).")
         return ds
+
+    def _apply_known_regions(self, ds: Dataset) -> None:
+        """Fast first pass: blank known burned-in-PHI rectangles (no OCR).
+
+        Parses the configured CTP-style pixel script once (or the bundled starter
+        library) and reuses the rules across the batch.
+        """
+        from . import pixelregions
+        if self._region_rules is None:
+            path = self.cfg.pixel_regions_script
+            try:
+                self._region_rules = (pixelregions.load_region_script(path)
+                                      if path else pixelregions.default_rules())
+            except OSError as exc:
+                log.warning("Pixel-region script %r unreadable (%s); using the "
+                            "bundled starter library.", path, exc)
+                self._region_rules = pixelregions.default_rules()
+        try:
+            pixelregions.redact_known_regions(ds, self._region_rules)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Known-region pass skipped: %s", exc)
 
     def _apply_ocr(self, ds: Dataset, phi=None) -> None:
         """Redact burned-in pixel text (optional; no-op if OCR unavailable)."""

@@ -258,6 +258,34 @@ class RulesView(View):
             row=r, column=0, columnspan=2, sticky="w", padx=PAD)
         r += 1
 
+        section(f, "Known burned-in regions (CTP pixel library)").grid(
+            row=r, column=0, columnspan=2, sticky="w", padx=PAD, pady=(10, 2))
+        r += 1
+        self.regions_enable = ctk.CTkCheckBox(
+            f, text="Blank known burned-in regions (fast first pass, before OCR)")
+        place(self.regions_enable, span_full=True)
+        rbar = ctk.CTkFrame(f, fg_color="transparent")
+        ctk.CTkLabel(rbar, text="CTP script").pack(side="left")
+        self.regions_script = ctk.CTkEntry(rbar, width=320,
+                                           placeholder_text="(bundled MIRC CTP "
+                                           "library)")
+        self.regions_script.pack(side="left", padx=(6, 6))
+        ctk.CTkButton(rbar, text="Load…", width=64,
+                      command=self._pick_region_script).pack(side="left")
+        ctk.CTkButton(rbar, text="Bundled", width=80, fg_color="gray40",
+                      command=lambda: self.regions_script.delete(0, "end")).pack(
+            side="left", padx=(6, 0))
+        place(rbar, span_full=True)
+        ctk.CTkLabel(
+            f, text="Blanks fixed rectangles for known devices (CT dose reports, "
+            "modality banners) using the bundled MIRC CTP library — or your own "
+            "CTP pixel script. Deterministic and needs no OCR; runs before OCR. "
+            "Empty = bundled library.",
+            anchor="w", justify="left", text_color=MUTED, wraplength=560,
+            font=ctk.CTkFont(size=11)).grid(
+            row=r, column=0, columnspan=2, sticky="w", padx=PAD)
+        r += 1
+
         section(f, "Consistent pseudonyms (persistent crosswalk)").grid(
             row=r, column=0, columnspan=2, sticky="w", padx=PAD, pady=(10, 2))
         r += 1
@@ -369,6 +397,13 @@ class RulesView(View):
         if text:
             entry.insert(0, str(text))
 
+    def _pick_region_script(self) -> None:
+        p = filedialog.askopenfilename(
+            title="CTP pixel anonymizer script",
+            filetypes=[("CTP pixel script", "*.script"), ("All files", "*.*")])
+        if p:
+            self._set_entry(self.regions_script, p)
+
     def _load(self, p: Project) -> None:
         self._set_check(self.basic, p.basic_profile)
         self.date_menu.set(_DATE_LABEL_FOR.get(p.effective_date_mode(),
@@ -390,6 +425,8 @@ class RulesView(View):
                                             _OCR_MODE_FOR["all"]))
         self._set_entry(self.ocr_conf, p.ocr_min_confidence)
         self._set_entry(self.ocr_mod, ",".join(p.ocr_modalities))
+        self._set_check(self.regions_enable, p.pixel_regions_enabled)
+        self._set_entry(self.regions_script, p.pixel_regions_script or "")
         self._set_check(self.pseudo_enable, p.pseudonymize)
         self.pseudo_mode.set(p.pseudonym_mode or "sequential")
         self._set_entry(self.pseudo_prefix, p.pseudonym_prefix)
@@ -487,6 +524,8 @@ class RulesView(View):
         p.remove_image_left_modality = self._split(self.img_left_mod.get(), ",")
         rules = [r.to_rule() for r in self._rows]
         p.rules = [r for r in rules if r is not None]
+        p.pixel_regions_enabled = bool(self.regions_enable.get())
+        p.pixel_regions_script = self.regions_script.get().strip()
         p.ocr_enabled = bool(self.ocr_enable.get())
         p.ocr_mode = _OCR_MODE_LABELS.get(self.ocr_mode.get(), "all")
         try:

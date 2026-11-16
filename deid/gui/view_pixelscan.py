@@ -63,7 +63,7 @@ class PixelScanView(View):
         except Exception:  # noqa: BLE001
             self._ohif_ok = False
 
-        self.body.grid_rowconfigure(6, weight=1)
+        self.body.grid_rowconfigure(7, weight=1)
         self.body.grid_columnconfigure(0, weight=1)
 
         section(self.body, "1.  Choose files or a folder").grid(
@@ -92,12 +92,27 @@ class PixelScanView(View):
         self.filter.set("All studies")
         self.filter.pack(side="right")
 
+        # Known-region (CTP DicomPixelAnonymizer) fast first pass.
+        self._region_script = ""        # "" = bundled MIRC CTP library
+        opt2 = ctk.CTkFrame(self.body, fg_color="transparent")
+        opt2.grid(row=3, column=0, sticky="ew", padx=PAD, pady=(4, 0))
+        self.regions_cb = ctk.CTkCheckBox(
+            opt2, text="Blank known burned-in regions (CTP library, before OCR)",
+            command=self._toggle_regions)
+        self.regions_cb.pack(side="left")
+        self.region_btn = ctk.CTkButton(opt2, text="CTP script…", width=110,
+                                        fg_color="gray40",
+                                        command=self._pick_region_script)
+        self.region_lbl = ctk.CTkLabel(opt2, text="", anchor="w",
+                                       text_color=MUTED,
+                                       font=ctk.CTkFont(size=11))
+
         self.out_lbl = ctk.CTkLabel(self.body, text="", anchor="w",
                                     text_color=MUTED, wraplength=820)
-        self.out_lbl.grid(row=3, column=0, sticky="ew", padx=PAD, pady=(4, 0))
+        self.out_lbl.grid(row=4, column=0, sticky="ew", padx=PAD, pady=(4, 0))
 
         barrow = ctk.CTkFrame(self.body, fg_color="transparent")
-        barrow.grid(row=4, column=0, sticky="ew", padx=PAD, pady=(6, 2))
+        barrow.grid(row=5, column=0, sticky="ew", padx=PAD, pady=(6, 2))
         self.scan_btn = ctk.CTkButton(barrow, text="Scan for burned-in PHI",
                                       height=36, command=self._scan)
         self.scan_btn.pack(side="left")
@@ -113,7 +128,7 @@ class PixelScanView(View):
         # adjudication counter stay visible at normal window widths (packed into
         # the scan row they were pushed off-screen until the window was maximized).
         review_bar = ctk.CTkFrame(self.body, fg_color="transparent")
-        review_bar.grid(row=5, column=0, sticky="ew", padx=PAD, pady=(0, 2))
+        review_bar.grid(row=6, column=0, sticky="ew", padx=PAD, pady=(0, 2))
         self.adj_lbl = ctk.CTkLabel(review_bar, text="", anchor="w",
                                     text_color=MUTED,
                                     font=ctk.CTkFont(size=12))
@@ -130,7 +145,7 @@ class PixelScanView(View):
             command=self._clean_confirmed)
 
         self.results = ctk.CTkScrollableFrame(self.body, label_text="Studies")
-        self.results.grid(row=6, column=0, sticky="nsew", padx=PAD,
+        self.results.grid(row=7, column=0, sticky="nsew", padx=PAD,
                           pady=(0, PAD))
         self.results.grid_columnconfigure(0, weight=1)
         self._update_count()
@@ -141,18 +156,49 @@ class PixelScanView(View):
                 text="⚠ No Tesseract OCR engine found — scanning unavailable.",
                 text_color="#d9a441")
 
-    def _toggle_redact(self) -> None:
-        if self.redact_cb.get():
-            self.out_btn.pack(side="left", padx=(PAD, 0))
+    def _needs_output(self) -> bool:
+        return bool(self.redact_cb.get() or self.regions_cb.get())
+
+    def _sync_output_controls(self) -> None:
+        """Both 'redact' and 'known regions' write corrected copies, so either
+        one needs an output folder — keep the picker + note visible for either."""
+        if self._needs_output():
             if not self.out_dir:
                 self.out_dir = paths.data_dir() / "pixel-corrected"
+            self.out_btn.pack(side="left", padx=(PAD, 0))
             self._refresh_out()
         else:
             self.out_btn.pack_forget()
             self.out_lbl.configure(text="")
 
+    def _toggle_redact(self) -> None:
+        self._sync_output_controls()
+
+    def _toggle_regions(self) -> None:
+        if self.regions_cb.get():
+            self.region_btn.pack(side="left", padx=(PAD, 0))
+            self.region_lbl.pack(side="left", padx=(PAD, 0))
+            self._refresh_region_lbl()
+        else:
+            self.region_btn.pack_forget()
+            self.region_lbl.pack_forget()
+        self._sync_output_controls()
+
+    def _refresh_region_lbl(self) -> None:
+        name = (Path(self._region_script).name if self._region_script
+                else "bundled MIRC CTP library")
+        self.region_lbl.configure(text=f"using: {name}")
+
+    def _pick_region_script(self) -> None:
+        p = filedialog.askopenfilename(
+            title="CTP pixel anonymizer script",
+            filetypes=[("CTP pixel script", "*.script"), ("All files", "*.*")])
+        if p:
+            self._region_script = p
+            self._refresh_region_lbl()
+
     def _refresh_out(self) -> None:
-        if self.redact_cb.get():
+        if self.redact_cb.get() or self.regions_cb.get():
             self.out_lbl.configure(
                 text=f"Corrected copies → {self.out_dir}   (pixels only — run "
                 "metadata de-id too; source files are left unchanged)")
@@ -229,12 +275,16 @@ class PixelScanView(View):
             messagebox.showinfo("Pixel scan", "Add files or a folder first.",
                                 parent=self)
             return
-        if not ocr.available():
-            messagebox.showwarning("Pixel scan", "No OCR engine available.",
-                                   parent=self)
+        regions = bool(self.regions_cb.get())
+        if not ocr.available() and not regions:
+            messagebox.showwarning(
+                "Pixel scan", "No OCR engine available. Enable “Blank known "
+                "burned-in regions” to run the known-region pass without OCR.",
+                parent=self)
             return
         redact = bool(self.redact_cb.get())
-        if redact and not self.out_dir:
+        need_out = redact or regions
+        if need_out and not self.out_dir:
             self._pick_out()
             if not self.out_dir:
                 return
@@ -257,7 +307,7 @@ class PixelScanView(View):
             self._scanning = False
             self.scan_btn.configure(state="normal")
             return
-        out_dir = str(self.out_dir) if redact else None
+        out_dir = str(self.out_dir) if need_out else None
         self._cancel = False
         self._scanning = True
         self.scan_btn.configure(state="disabled")
@@ -272,6 +322,7 @@ class PixelScanView(View):
         def work():
             return pixelscan.scan_studies(
                 files, redact=redact, out_dir=out_dir, min_confidence=conf,
+                pixel_regions=regions, pixel_regions_script=self._region_script,
                 should_cancel=lambda: self._cancel, on_item=progress)
 
         run_threaded(self, work, self._scan_done)
@@ -350,7 +401,9 @@ class PixelScanView(View):
                  f"Acc {st.accession or '—'}  ·  {st.modalities or '?'}  ·  "
                  f"{st.n_series} series, {st.n_instances} img  ·  {st.n_phi} PHI"
                  f" / {st.n_suspects} review"
-                 + (f" · {st.n_redacted} redacted" if st.n_redacted else ""))
+                 + (f" · {st.n_redacted} OCR-redacted" if st.n_redacted else "")
+                 + (f" · {st.n_region_redacted} rule-blanked"
+                    if st.n_region_redacted else ""))
         ctk.CTkButton(
             self.results, text=label, anchor="w", height=30,
             fg_color=("gray85", "gray20"), hover_color=("gray78", "gray28"),

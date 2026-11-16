@@ -66,6 +66,10 @@ class Project:
     ocr_min_confidence: float = 0.5
     ocr_modalities: list = field(default_factory=list)   # [] = all modalities
     ocr_mode: str = "all"                                # all | phi (match meta)
+    # Known-region (CTP DicomPixelAnonymizer-style) blanking: a fast, deterministic
+    # first pass before OCR. Off by default; empty script = bundled MIRC CTP library.
+    pixel_regions_enabled: bool = False
+    pixel_regions_script: str = ""
 
     # -- Object / series drop rules (wired up in the drop-rules phase) ---
     drop_rules: list = field(default_factory=list)       # list[dict]
@@ -154,6 +158,8 @@ class Project:
             ocr_min_confidence=float(self.ocr_min_confidence or 0.5),
             ocr_modalities=list(self.ocr_modalities),
             ocr_mode=self.ocr_mode or "all",
+            pixel_regions_enabled=self.pixel_regions_enabled,
+            pixel_regions_script=self.pixel_regions_script or "",
         )
         if self.morph_enabled and self.morph_key_tag and self.morph_target_tags:
             fmt = "|".join([self.morph_key_tag] + list(self.morph_target_tags))
@@ -214,6 +220,8 @@ class Project:
             parts.append(f"{len(self.drop_rules)} drop rule(s)")
         if self.remove_image_top or self.remove_image_left:
             parts.append("pixel blanking")
+        if self.pixel_regions_enabled:
+            parts.append("known-region blanking")
         if self.ocr_enabled:
             parts.append("OCR redaction")
         if self.pseudonymize:

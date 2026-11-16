@@ -13,6 +13,45 @@ from pydicom.uid import generate_uid, ExplicitVRLittleEndian, CTImageStorage
 
 from deid import pixelscan
 from deid.pixelscan import InstanceReport, instance_status, build_studies
+from conftest import make_ct, save
+
+
+def test_scan_applies_known_regions_with_provenance(tmp_path):
+    """Known-region pass blanks a matched device's rectangle, writes a corrected
+    copy without OCR, and reports the rule-blank count separately."""
+    script = tmp_path / "pix.script"
+    script.write_text('{ Modality.equals("CT") }\n(0,0,2,2)\n', encoding="utf-8")
+    src = tmp_path / "in"
+    src.mkdir()
+    save(make_ct(), src / "a.dcm")
+    out = tmp_path / "out"
+
+    studies = pixelscan.scan_studies(
+        [src / "a.dcm"], redact=False, out_dir=str(out),
+        pixel_regions=True, pixel_regions_script=str(script))
+
+    st = studies[0]
+    assert st.n_region_redacted >= 1        # blanked by a known-region rule
+    assert st.n_redacted == 0               # OCR redaction was off
+    inst = st.series[0].instances[0]
+    assert inst.out_path and Path(inst.out_path).exists()
+    assert inst.status == pixelscan.STATUS_CORRECTED
+
+    ov = tmp_path / "ov.csv"
+    pixelscan.write_overview_csv(studies, ov)
+    rows = list(csv.DictReader(open(ov, newline="", encoding="utf-8")))
+    assert int(rows[0]["region_redacted"]) >= 1
+    assert int(rows[0]["ocr_redacted"]) == 0
+
+
+def test_scan_without_regions_leaves_region_count_zero(tmp_path):
+    src = tmp_path / "in"
+    src.mkdir()
+    save(make_ct(), src / "a.dcm")
+    out = tmp_path / "out"
+    studies = pixelscan.scan_studies([src / "a.dcm"], redact=True,
+                                     out_dir=str(out))
+    assert studies[0].n_region_redacted == 0
 from deid.engine import ocr
 from conftest import make_ct, save
 
@@ -88,7 +127,8 @@ def test_overview_csv(tmp_path):
     assert rows[0] == pixelscan._OVERVIEW_COLS
     row = dict(zip(rows[0], rows[1]))
     assert row["accession"] == "ACC1" and row["phi_hits"] == "2"
-    assert row["redacted"] == "2" and row["status"] == pixelscan.STATUS_CORRECTED
+    assert row["ocr_redacted"] == "2" and row["region_redacted"] == "0"
+    assert row["status"] == pixelscan.STATUS_CORRECTED
 
 
 def test_findings_csv_marks_redacted(tmp_path):

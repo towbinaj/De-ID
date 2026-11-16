@@ -33,7 +33,7 @@ from typing import Callable
 from pydicom import dcmread
 
 from . import paths, imagefile
-from .engine import ocr, phimatch, fileops
+from .engine import ocr, phimatch, fileops, pixelregions
 from .engine.processing import neutralize_preamble
 from .logging_setup import get_logger
 from .project import _slug
@@ -77,7 +77,8 @@ class InstanceReport:
     accession: str = ""
     patient_id: str = ""
     findings: list = field(default_factory=list)
-    redacted: int = 0
+    redacted: int = 0                 # regions blanked by OCR / metadata match
+    region_redacted: int = 0          # rectangles blanked by a known-region rule
     out_path: str = ""
     dropped: bool = False
 
@@ -91,7 +92,12 @@ class InstanceReport:
 
     @property
     def status(self) -> str:
-        return instance_status(self.n_phi, self.n_suspects, self.redacted)
+        base = instance_status(self.n_phi, self.n_suspects, self.redacted)
+        # A rule-blanked image with no OCR findings still produced a corrected
+        # copy, so it is "corrected", not "pass".
+        if base == STATUS_PASS and self.region_redacted:
+            return STATUS_CORRECTED
+        return base
 
 
 @dataclass
@@ -113,6 +119,10 @@ class SeriesReport:
     @property
     def n_redacted(self) -> int:
         return sum(i.redacted for i in self.instances)
+
+    @property
+    def n_region_redacted(self) -> int:
+        return sum(i.region_redacted for i in self.instances)
 
     @property
     def status(self) -> str:
@@ -149,6 +159,10 @@ class StudyReport:
     @property
     def n_redacted(self) -> int:
         return sum(s.n_redacted for s in self.series)
+
+    @property
+    def n_region_redacted(self) -> int:
+        return sum(s.n_region_redacted for s in self.series)
 
     @property
     def status(self) -> str:
@@ -233,6 +247,7 @@ def _scan_image(f: Path, min_confidence: float, on_item, i: int,
 
 def scan_studies(files, *, redact: bool = False, out_dir=None,
                  min_confidence: float = 0.4, modalities=None,
+                 pixel_regions: bool = False, pixel_regions_script: str = "",
                  should_cancel: Callable[[], bool] | None = None,
                  on_item: Callable[[int, int, Path, int], None] | None = None
                  ) -> list[StudyReport]:
@@ -241,6 +256,11 @@ def scan_studies(files, *, redact: bool = False, out_dir=None,
     When ``redact`` and ``out_dir`` are set, metadata-matched boxes are blacked
     out and a corrected copy of each changed file is written under ``out_dir``,
     mirroring the input folder structure (relative to the files' common base).
+
+    When ``pixel_regions`` is set, a fast known-region (CTP DicomPixelAnonymizer)
+    pass blanks fixed rectangles for known devices BEFORE OCR, using
+    ``pixel_regions_script`` (a CTP pixel script path) or the bundled MIRC CTP
+    library when empty. Rule-blanked rectangles are counted separately from OCR.
     """
     files = [Path(f) for f in files]
     out = Path(out_dir) if out_dir else None
@@ -248,6 +268,18 @@ def scan_studies(files, *, redact: bool = False, out_dir=None,
         out.mkdir(parents=True, exist_ok=True)
     base = mirror_base(files) if out else None
     do_redact = bool(redact and out)
+    # The known-region pass writes corrected copies, so it needs an output folder
+    # but NOT the OCR-redact toggle (it is deterministic, no OCR).
+    region_rules = None
+    if pixel_regions and out is not None:
+        try:
+            region_rules = (pixelregions.load_region_script(pixel_regions_script)
+                            if pixel_regions_script
+                            else pixelregions.default_rules())
+        except OSError as exc:
+            log.warning("Pixel-region script %r unreadable (%s); using the "
+                        "bundled library.", pixel_regions_script, exc)
+            region_rules = pixelregions.default_rules()
     instances: list[InstanceReport] = []
     total = len(files)
     # Redaction is strictly per instance: a box is blanked only where it was
@@ -274,12 +306,21 @@ def scan_studies(files, *, redact: bool = False, out_dir=None,
             if on_item:
                 on_item(i, total, f, -1)
             continue
+        # Known-region pass runs first (deterministic, no OCR), so OCR then sees
+        # the already-blanked image and the corrected copy carries both.
+        region_redacted = 0
+        if region_rules is not None:
+            try:
+                region_redacted = pixelregions.redact_known_regions(
+                    ds, region_rules)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Known-region pass skipped for %s: %s", f.name, exc)
         phi = phimatch.build_phi(ds)
         findings, redacted = ocr.scan_and_redact(
             ds, phi, min_confidence=min_confidence, modalities=modalities,
             redact=do_redact)
         out_path = ""
-        if redacted and out:
+        if (redacted or region_redacted) and out:
             dest = _corrected_dest(f, out, base)
             try:
                 dest.parent.mkdir(parents=True, exist_ok=True)
@@ -298,7 +339,8 @@ def scan_studies(files, *, redact: bool = False, out_dir=None,
             modality=_s(ds, "Modality"),
             accession=_s(ds, "AccessionNumber"),
             patient_id=_s(ds, "PatientID"), findings=findings,
-            redacted=redacted, out_path=out_path)
+            redacted=redacted, region_redacted=region_redacted,
+            out_path=out_path)
         instances.append(inst)
         if on_item:
             on_item(i, total, f, len(findings))
@@ -413,8 +455,8 @@ def adjudication_key(study_uid: str, series_uid: str, category: str,
 
 # -- report writers ------------------------------------------------------
 _OVERVIEW_COLS = ["study_uid", "accession", "patient_id", "modalities",
-                  "series", "instances", "phi_hits", "suspects", "redacted",
-                  "status"]
+                  "series", "instances", "phi_hits", "suspects",
+                  "ocr_redacted", "region_redacted", "status"]
 _DETAIL_COLS = ["study_uid", "accession", "series_number", "series_desc",
                 "sop_instance", "modality", "category", "text", "confidence",
                 "box", "redacted", "corrected_file", "adjudicated"]
@@ -427,7 +469,8 @@ def write_overview_csv(studies: list[StudyReport], path) -> int:
         for st in studies:
             w.writerow([st.study_uid, st.accession, st.patient_id,
                         st.modalities, st.n_series, st.n_instances, st.n_phi,
-                        st.n_suspects, st.n_redacted, st.status])
+                        st.n_suspects, st.n_redacted, st.n_region_redacted,
+                        st.status])
     return len(studies)
 
 

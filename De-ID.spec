@@ -16,6 +16,15 @@ _icon = os.path.join("assets", "icon.ico")
 if os.path.exists(_icon):
     datas.append((_icon, "assets"))
 
+# Bundled CTP-style known-region pixel library (MIRC CTP DicomPixelAnonymizer),
+# committed in the repo. Shipped as data so pixelregions.default_rules() can load
+# it in the frozen app; located via paths.resource_dir() at runtime.
+_regions = os.path.join("deid", "engine", "recipes")
+if os.path.isdir(_regions):
+    for _f in os.listdir(_regions):
+        if _f.endswith(".script"):
+            datas.append((os.path.join(_regions, _f), _regions))
+
 # Bundled Tesseract OCR engine (tesseract.exe + DLLs + tessdata), staged by
 # scripts/fetch_tesseract.py; not in git. If absent, OCR falls back to a
 # system-installed / PATH tesseract, and is skipped if none is found. Tesseract
