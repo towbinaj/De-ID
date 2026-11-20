@@ -28,6 +28,20 @@ def test_legacy_project_json_defaults_regions_off():
     assert p.to_receiver_config().pixel_regions_enabled is False
 
 
+def test_sanitize_field_round_trips_and_maps():
+    p = Project(name="t", sanitize_enabled=True)
+    back = Project.from_dict(p.to_dict())
+    assert back.sanitize_enabled is True
+    assert p.to_receiver_config().sanitize_enabled is True
+    assert "structural sanitize" in p.summary()
+
+
+def test_legacy_project_json_defaults_sanitize_off():
+    p = Project.from_dict({"name": "legacy"})   # JSON without the new key
+    assert p.sanitize_enabled is False
+    assert p.to_receiver_config().sanitize_enabled is False
+
+
 def test_project_round_trip(tmp_path, monkeypatch):
     monkeypatch.setenv("DEID_DATA", str(tmp_path))
     p = Project(name="Trial A", basic_profile=True, calculated_dates=True,

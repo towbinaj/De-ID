@@ -92,6 +92,17 @@ De-ID keeps the same engine and rebuilds the experience around focused views.
   the DICOM Toolkit's, so the two apps can share a destination list; handy for
   carrying settings to a new version or another machine.
 - **CTP compatibility** — import/export RSNA/CTP anonymizer scripts.
+- **Structural sanitize** (optional, for untrusted sources) — a safety pass,
+  separate from PHI de-id, that strips the non-clinical binary elements a DICOM
+  object can use to smuggle a payload into a downstream PACS / VNA / viewer:
+  **Icon Image Sequence**, **overlay** and **curve** planes, and **encapsulated
+  document** streams (PDF/CDA/STL/…). It also flags a non-zero 128-byte
+  **preamble** (the PE/DICOM polyglot, CVE-2019-11687); the preamble is zeroed on
+  every written object regardless. Enable it per **Project** (Rules view) when
+  de-identifying externally-sourced data. It does **not** sanitize primary pixel
+  data — a crafted JPEG/JPEG2000/RLE bitstream is only neutralized by transcoding,
+  which this pass does not do — and it is a structural control, not a malware
+  scanner: it removes identifiable carriers, it does not certify an object safe.
 
 ## Privacy & security
 

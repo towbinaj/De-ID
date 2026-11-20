@@ -122,6 +122,10 @@ class ReceiverConfig:
     # See engine/pixelregions.py.
     pixel_regions_enabled: bool = False
     pixel_regions_script: str = ""
+    # [SANITIZE] structural pass: strip smuggled-payload carriers (icon images,
+    # overlay/curve planes, encapsulated document streams) and flag a non-zero
+    # preamble. Independent of PHI de-id; see engine/sanitize.py.
+    sanitize_enabled: bool = False
 
 
 def _parse_tag(s: str) -> Tag:
@@ -163,6 +167,7 @@ class Processor:
         self._morph_table = self._load_morph_table()
         self._pseudo_tags = self._resolve_pseudo_tags()
         self._region_rules = None   # lazily parsed known-region library
+        self._sanitize_cfg = None   # lazily built structural-sanitize config
 
     def _resolve_pseudo_tags(self) -> list:
         """Resolve pseudonym tag specs (keyword or 8-hex) to (kind, Tag)."""
@@ -279,6 +284,11 @@ class Processor:
         if self.cfg.ocr_enabled and self.cfg.ocr_mode == "phi":
             from . import phimatch
             ocr_phi = phimatch.build_phi(ds)
+        # Structural sanitize: strip smuggled-payload carriers (icon images,
+        # overlay/curve planes, encapsulated streams) before the attribute
+        # profile runs. Independent of PHI de-id.
+        if self.cfg.sanitize_enabled:
+            self._apply_sanitize(ds)
         if self.cfg.basic_profile:
             self._apply_basic_profile(ds)
         if self.cfg.morph_tags:
@@ -308,6 +318,27 @@ class Processor:
             log.warning("Zeroed a non-empty DICOM preamble on a de-identified "
                         "object (possible PE/DICOM polyglot, CVE-2019-11687).")
         return ds
+
+    def _apply_sanitize(self, ds: Dataset) -> None:
+        """Strip smuggled-payload carriers and log value-free findings.
+
+        The 128-byte preamble is zeroed unconditionally at the end of
+        ``process()``; here we only report a non-zero one. Everything else
+        (icon images, overlay/curve planes, encapsulated document streams) is
+        stripped in place.
+        """
+        from . import sanitize
+        if self._sanitize_cfg is None:
+            self._sanitize_cfg = sanitize.SanitizeConfig(enabled=True)
+        try:
+            report = sanitize.sanitize_dataset(ds, self._sanitize_cfg)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Sanitize pass skipped: %s", exc)
+            return
+        if report.any_found:
+            log.warning("Sanitize stripped/flagged on %s: %s",
+                        getattr(ds, "SOPInstanceUID", "?"),
+                        "; ".join(report.findings()))
 
     def _apply_known_regions(self, ds: Dataset) -> None:
         """Fast first pass: blank known burned-in-PHI rectangles (no OCR).

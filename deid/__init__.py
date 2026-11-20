@@ -4,5 +4,5 @@ Reuses the DICOM Toolkit's proven de-identification engine (vendored under
 ``deid/engine/``) and rebuilds the workflow around saved, re-runnable projects.
 """
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 APP_NAME = "De-ID"

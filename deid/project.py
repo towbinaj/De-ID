@@ -71,6 +71,13 @@ class Project:
     pixel_regions_enabled: bool = False
     pixel_regions_script: str = ""
 
+    # -- Structural sanitize --------------------------------------------
+    # Strip smuggled-payload carriers (icon images, overlay/curve planes,
+    # encapsulated document streams) and flag a non-zero preamble. Off by
+    # default; a safety control for untrusted/externally-sourced objects,
+    # independent of PHI de-id. See engine/sanitize.py.
+    sanitize_enabled: bool = False
+
     # -- Object / series drop rules (wired up in the drop-rules phase) ---
     drop_rules: list = field(default_factory=list)       # list[dict]
 
@@ -160,6 +167,7 @@ class Project:
             ocr_mode=self.ocr_mode or "all",
             pixel_regions_enabled=self.pixel_regions_enabled,
             pixel_regions_script=self.pixel_regions_script or "",
+            sanitize_enabled=self.sanitize_enabled,
         )
         if self.morph_enabled and self.morph_key_tag and self.morph_target_tags:
             fmt = "|".join([self.morph_key_tag] + list(self.morph_target_tags))
@@ -224,6 +232,8 @@ class Project:
             parts.append("known-region blanking")
         if self.ocr_enabled:
             parts.append("OCR redaction")
+        if self.sanitize_enabled:
+            parts.append("structural sanitize")
         if self.pseudonymize:
             if (self.pseudonym_mode or "") == "custom":
                 parts.append(f"pseudonyms ({self.pseudonym_example(1)}…)")

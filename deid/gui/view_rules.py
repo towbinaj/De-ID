@@ -286,6 +286,25 @@ class RulesView(View):
             row=r, column=0, columnspan=2, sticky="w", padx=PAD)
         r += 1
 
+        section(f, "Structural sanitize (untrusted sources)").grid(
+            row=r, column=0, columnspan=2, sticky="w", padx=PAD, pady=(10, 2))
+        r += 1
+        self.sanitize_enable = ctk.CTkCheckBox(
+            f, text="Strip smuggled-payload carriers (icon images, overlays, "
+            "curves, encapsulated files)")
+        place(self.sanitize_enable, span_full=True)
+        ctk.CTkLabel(
+            f, text="A safety pass for externally-sourced objects: removes the "
+            "non-clinical binary elements a DICOM file can smuggle a payload in — "
+            "Icon Image Sequence, overlay/curve planes, and encapsulated document "
+            "streams — and flags a non-zero preamble (PE/DICOM polyglot). Does NOT "
+            "sanitize primary pixel data (crafted JPEG/JPEG2000) — that needs "
+            "transcoding. Independent of PHI de-id.",
+            anchor="w", justify="left", text_color=MUTED, wraplength=560,
+            font=ctk.CTkFont(size=11)).grid(
+            row=r, column=0, columnspan=2, sticky="w", padx=PAD)
+        r += 1
+
         section(f, "Consistent pseudonyms (persistent crosswalk)").grid(
             row=r, column=0, columnspan=2, sticky="w", padx=PAD, pady=(10, 2))
         r += 1
@@ -427,6 +446,7 @@ class RulesView(View):
         self._set_entry(self.ocr_mod, ",".join(p.ocr_modalities))
         self._set_check(self.regions_enable, p.pixel_regions_enabled)
         self._set_entry(self.regions_script, p.pixel_regions_script or "")
+        self._set_check(self.sanitize_enable, p.sanitize_enabled)
         self._set_check(self.pseudo_enable, p.pseudonymize)
         self.pseudo_mode.set(p.pseudonym_mode or "sequential")
         self._set_entry(self.pseudo_prefix, p.pseudonym_prefix)
@@ -526,6 +546,7 @@ class RulesView(View):
         p.rules = [r for r in rules if r is not None]
         p.pixel_regions_enabled = bool(self.regions_enable.get())
         p.pixel_regions_script = self.regions_script.get().strip()
+        p.sanitize_enabled = bool(self.sanitize_enable.get())
         p.ocr_enabled = bool(self.ocr_enable.get())
         p.ocr_mode = _OCR_MODE_LABELS.get(self.ocr_mode.get(), "all")
         try:
